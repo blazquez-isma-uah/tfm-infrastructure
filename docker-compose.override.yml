@@ -1,6 +1,6 @@
 # docker-compose.override.yml - para desarrollo local
 services:
-  usuarios:
+  users:
     volumes:
       - "${USUARIOS_DIR}/target/app.jar:/app/app.jar:ro"
     # Opcional: logs más verbosos en dev
@@ -8,7 +8,7 @@ services:
     #   LOGGING_LEVEL_ORG_SPRINGFRAMEWORK_SECURITY: DEBUG
     #   LOGGING_LEVEL_ORG_SPRINGFRAMEWORK_SECURITY_OAUTH2: DEBUG
 
-  eventos:
+  events:
     volumes:
       - "${EVENTS_DIR}/target/app.jar:/app/app.jar:ro"
     # environment:

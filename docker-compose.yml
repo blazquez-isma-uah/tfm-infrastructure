@@ -74,7 +74,7 @@ services:
     # profiles: ["db","users","events"]
     networks: [tfm_net]
 
-  usuarios:
+  users:
     build:
       context: ${USUARIOS_DIR}
       dockerfile: Dockerfile
@@ -102,7 +102,7 @@ services:
     # profiles: ["users"]
     networks: [tfm_net]
 
-  eventos:
+  events:
     build:
       context: ${EVENTS_DIR}
       dockerfile: Dockerfile
@@ -169,8 +169,8 @@ services:
       - env/local.env
     depends_on:
       keycloak: { condition: service_started }
-      usuarios: { condition: service_healthy }
-      eventos:  { condition: service_healthy }
+      users: { condition: service_healthy }
+      events:  { condition: service_healthy }
     environment:
       SPRING_PROFILES_ACTIVE: docker
       SPRING_SECURITY_OAUTH2_RESOURCESERVER_JWT_JWK_SET_URI: ${KC_JWKS}
