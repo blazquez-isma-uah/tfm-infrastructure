@@ -15,6 +15,13 @@ services:
     #   LOGGING_LEVEL_ORG_SPRINGFRAMEWORK_SECURITY: DEBUG
     #   LOGGING_LEVEL_ORG_SPRINGFRAMEWORK_SECURITY_OAUTH2: DEBUG
 
+  surveys:
+    volumes:
+      - "${SURVEYS_DIR}/target/app.jar:/app/app.jar:ro"
+    # Opcional: logs más detallados en desarrollo
+    # environment:
+    #   LOGGING_LEVEL_COM_TFM_BANDAS_SURVEYS: DEBUG
+
   identity:
     volumes:
       - "${IDENTITY_DIR}/target/app.jar:/app/app.jar:ro"
