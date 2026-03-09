@@ -25,7 +25,7 @@ Esta guía contiene todos los comandos útiles de Docker y Docker Compose para e
 ```bash
 docker compose --env-file env/local.env up -d --build
 ```
-Levanta toda la infraestructura: Keycloak, MySQL, microservicios (users, events, surveys, identity) y gateway, construyendo las imágenes desde cero.
+Levanta toda la infraestructura: Keycloak, MySQL, microservicios (users, events, surveys, identity), gateway y frontend, construyendo las imágenes desde cero.
 
 ### Arrancar todos los servicios (sin reconstruir)
 ```bash
@@ -74,6 +74,18 @@ Levanta el microservicio de identidad con Keycloak.
 docker compose --env-file env/local.env up -d gateway users events surveys keycloak
 ```
 Levanta el gateway con todos los microservicios necesarios.
+
+### Arrancar frontend y sus dependencias
+```bash
+docker compose --env-file env/local.env up -d frontend gateway users events surveys keycloak
+```
+Levanta el frontend con el gateway y todos los microservicios backend necesarios.
+
+### Arrancar solo el frontend (si gateway ya está corriendo)
+```bash
+docker compose --env-file env/local.env up -d frontend
+```
+Levanta solo el servicio frontend (requiere que gateway esté disponible).
 
 ### Arrancar solo un servicio específico (sin dependencias)
 ```bash
@@ -173,6 +185,12 @@ docker compose --env-file env/local.env logs -f users events gateway
 ```
 Sigue los logs de usuarios, eventos y gateway simultáneamente.
 
+### Ver logs del frontend
+```bash
+docker compose --env-file env/local.env logs -f frontend
+```
+Sigue los logs del servicio frontend en tiempo real.
+
 ### Ver últimas N líneas de logs
 ```bash
 docker compose --env-file env/local.env logs --tail=100 users
@@ -249,6 +267,24 @@ docker compose --env-file env/local.env exec -u root users apk add curl
 ```
 Instala curl en el contenedor (útil para debugging).
 
+### Acceder a la shell del contenedor frontend
+```bash
+docker compose --env-file env/local.env exec frontend sh
+```
+Abre una terminal interactiva dentro del contenedor frontend (Nginx).
+
+### Verificar conectividad desde frontend al gateway
+```bash
+docker compose --env-file env/local.env exec frontend wget -q -O- http://gateway:8080/actuator/health
+```
+Verifica que el frontend puede comunicarse con el gateway.
+
+### Ver configuración de Nginx en el frontend
+```bash
+docker compose --env-file env/local.env exec frontend cat /etc/nginx/nginx.conf
+```
+Muestra la configuración de Nginx del contenedor frontend.
+
 ---
 
 ## 🔄 Comandos de Desarrollo y Recarga
@@ -271,17 +307,38 @@ Ciclo completo para aplicar cambios en el código sin reconstruir la imagen Dock
 
 ### Recompilar y reiniciar todos los microservicios
 ```bash
-# Compilar todos los proyectos
+# Compilar todos los proyectos Java
 cd "../users" && mvn clean package -DskipTests && cd "../infrastructure"
 cd "../events" && mvn clean package -DskipTests && cd "../infrastructure"
 cd "../surveys" && mvn clean package -DskipTests && cd "../infrastructure"
 cd "../identity" && mvn clean package -DskipTests && cd "../infrastructure"
 cd "../gateway" && mvn clean package -DskipTests && cd "../infrastructure"
 
-# Reiniciar todos los servicios
+# Reiniciar todos los servicios backend
 docker compose --env-file env/local.env restart users events surveys identity gateway
 ```
-Actualiza todos los microservicios con cambios recientes.
+Actualiza todos los microservicios backend con cambios recientes.
+
+### Desarrollo con el frontend (React/Vue/Angular)
+```bash
+# 1. Editar código en ../front-web/src/...
+
+# 2. Compilar/Construir el frontend (ejemplo con npm)
+cd "../front-web" && npm run build && cd "../infrastructure"
+
+# 3. Reconstruir y reiniciar el contenedor frontend
+docker compose --env-file env/local.env up -d --build frontend
+
+# 4. Ver logs para verificar
+docker compose --env-file env/local.env logs -f frontend
+```
+Ciclo completo para aplicar cambios en el código del frontend.
+
+### Reiniciar frontend sin reconstruir
+```bash
+docker compose --env-file env/local.env restart frontend
+```
+Reinicia el contenedor frontend (útil si solo cambiaron variables de entorno).
 
 ### Forzar recreación de un servicio
 ```bash
@@ -523,6 +580,69 @@ Verifica conectividad de red entre usuarios y Keycloak.
 
 ---
 
+## 🎨 Comandos Específicos para Frontend
+
+### Construir el proyecto frontend
+```bash
+cd ../front-web
+npm run build
+# o con yarn
+yarn build
+```
+Compila el proyecto frontend (React/Vue/Angular) para producción.
+
+### Ejecutar frontend en modo desarrollo (fuera de Docker)
+```bash
+cd ../front-web
+npm run dev
+# o
+npm start
+```
+Inicia el servidor de desarrollo con hot-reload automático (generalmente en puerto 5173 o 3000).
+
+### Instalar dependencias del frontend
+```bash
+cd ../front-web
+npm install
+# o
+yarn install
+```
+Instala todas las dependencias definidas en package.json.
+
+### Limpiar y reconstruir frontend
+```bash
+cd ../front-web
+rm -rf dist/ build/ node_modules/
+npm install
+npm run build
+```
+Limpieza completa y reconstrucción del frontend desde cero.
+
+### Ver estructura de archivos del frontend en Docker
+```bash
+docker compose --env-file env/local.env exec frontend ls -la /usr/share/nginx/html/
+```
+Muestra los archivos servidos por Nginx en el contenedor.
+
+### Actualizar configuración de Nginx en el frontend
+```bash
+# 1. Editar archivo de configuración (si existe en el proyecto)
+cd ../front-web
+# Editar nginx.conf o similar
+
+# 2. Reconstruir imagen
+cd ../infrastructure
+docker compose --env-file env/local.env up -d --build frontend
+```
+
+### Verificar rutas y assets del frontend
+```bash
+docker compose --env-file env/local.env exec frontend find /usr/share/nginx/html -type f
+```
+Lista todos los archivos servidos por el frontend.
+
+---
+
 ## ☕ Comandos Útiles de Maven
 
 ### Compilar proyecto sin tests
@@ -636,18 +756,64 @@ docker compose --env-file env/local.env up -d --build keycloak
 docker compose --env-file env/local.env logs keycloak | grep "realm"
 ```
 
+### Escenario 6: Desarrollo en el frontend
+```bash
+# 1. Hacer cambios en el código del frontend
+cd "../front-web"
+
+# 2. Construir el proyecto frontend (ejemplo con npm/yarn)
+npm run build
+# o con yarn
+yarn build
+
+# 3. Volver a infrastructure
+cd "../infrastructure"
+
+# 4. Reconstruir y levantar el contenedor frontend
+docker compose --env-file env/local.env up -d --build frontend
+
+# 5. Verificar en el navegador
+# Abrir http://localhost:5173
+
+# 6. Ver logs si hay problemas
+docker compose --env-file env/local.env logs -f frontend
+```
+
+### Escenario 7: Desarrollo con hot-reload del frontend (modo desarrollo)
+```bash
+# Opción alternativa: correr el frontend en modo desarrollo fuera de Docker
+# (con hot-reload automático) y solo usar Docker para el backend
+
+cd "../front-web"
+npm run dev
+# El frontend estará disponible en http://localhost:5173 con hot-reload
+
+# Backend en Docker
+cd "../infrastructure"
+docker compose --env-file env/local.env up -d gateway users events surveys identity keycloak mysql
+```
+
 ---
 
 ## 📌 URLs de Acceso (configuración por defecto)
 
+- **Frontend (Aplicación Web)**: http://localhost:5173
 - **Keycloak**: http://localhost:8080 (admin/admin)
+- **Gateway (API REST)**: http://localhost:8085
 - **Users Service**: http://localhost:8081
 - **Events Service**: http://localhost:8083
 - **Surveys Service**: http://localhost:8084
-- **Gateway**: http://localhost:8085
 - **Identity Service**: http://localhost:8086
 - **MySQL Principal**: localhost:3307 (root/root)
 - **MySQL Keycloak**: localhost:3308 (keycloak/keycloakpass)
+
+### 🎨 Acceso Principal para Usuarios
+
+La **aplicación web frontend** es el punto de entrada principal para los usuarios finales. Accede a través de:
+
+**http://localhost:5173**
+
+El frontend se comunica con el backend a través del **Gateway** en el puerto 8085.
 
 ---
 
@@ -657,13 +823,13 @@ docker compose --env-file env/local.env logs keycloak | grep "realm"
 
 2. **Usar `-d` (detached mode)** para que los contenedores corran en segundo plano.
 
-3. **Compilar con `-DskipTests`** durante desarrollo para mayor rapidez.
+3. **Compilar con `-DskipTests`** durante desarrollo para mayor rapidez (microservicios Java).
 
-4. **El docker-compose.override.yml** monta los JARs como volúmenes, permitiendo hot-reload sin reconstruir imágenes.
+4. **El docker-compose.override.yml** monta los JARs como volúmenes, permitiendo hot-reload sin reconstruir imágenes (solo para servicios Java).
 
 5. **Health checks**: Los servicios tienen health checks configurados, usa `docker compose ps` para ver su estado.
 
-6. **Order matters**: MySQL y Keycloak deben estar listos antes de los microservicios (las dependencias están configuradas).
+6. **Order matters**: MySQL y Keycloak deben estar listos antes de los microservicios, y el Gateway debe estar listo antes del Frontend (las dependencias están configuradas).
 
 7. **Logs persistentes**: Para guardar logs importantes, redirige la salida a archivos.
 
@@ -672,6 +838,16 @@ docker compose --env-file env/local.env logs keycloak | grep "realm"
 9. **Network isolation**: Todos los servicios están en la red `tfm_net`, aislados del host excepto por los puertos publicados.
 
 10. **Restart policy**: Los servicios no tienen restart policy automática (por defecto en desarrollo).
+
+11. **Desarrollo Frontend**: Para desarrollo activo del frontend, considera ejecutarlo fuera de Docker (con `npm run dev`) para aprovechar hot-reload, y usar Docker solo para el backend.
+
+12. **Frontend en Docker**: El frontend usa Nginx para servir archivos estáticos. Cualquier cambio requiere reconstruir con `npm run build` y luego reconstruir la imagen Docker.
+
+13. **CORS**: Si el frontend en desarrollo (fuera de Docker) no puede comunicarse con el backend, verifica la configuración CORS en el Gateway.
+
+14. **Variables de entorno del Frontend**: Si el frontend usa variables de entorno (API URLs), asegúrate de que estén correctamente configuradas durante el build (usando archivos .env o similar).
+
+15. **Caché del navegador**: Si no ves cambios en el frontend, limpia la caché del navegador o usa modo incógnito.
 
 ---
 
@@ -725,6 +901,54 @@ docker compose exec users ls -lh /app/app.jar
 
 # Forzar restart
 docker compose restart users
+```
+
+### Frontend muestra página en blanco o error 404
+```bash
+# Verificar que el frontend está corriendo
+docker compose --env-file env/local.env ps frontend
+
+# Ver logs del frontend
+docker compose --env-file env/local.env logs frontend
+
+# Verificar que el build se generó correctamente
+cd ../front-web
+ls -la dist/  # o build/ dependiendo del framework
+
+# Reconstruir el frontend desde cero
+cd ../front-web
+rm -rf dist/ node_modules/
+npm install
+npm run build
+cd ../infrastructure
+docker compose --env-file env/local.env up -d --build --force-recreate frontend
+```
+
+### Frontend no puede comunicarse con el backend
+```bash
+# Verificar que el gateway está corriendo y saludable
+docker compose --env-file env/local.env ps gateway
+
+# Verificar desde el frontend que puede alcanzar el gateway
+docker compose --env-file env/local.env exec frontend wget -q -O- http://gateway:8080/actuator/health
+
+# Verificar configuración de API endpoint en el frontend
+# (revisar variables de entorno o archivos de configuración del frontend)
+
+# Ver logs del gateway por si hay errores CORS
+docker compose --env-file env/local.env logs -f gateway
+```
+
+### Frontend tarda mucho en cargar
+```bash
+# Verificar recursos del contenedor
+docker stats tfm-bandas-frontend-1
+
+# Verificar health check
+docker inspect tfm-bandas-frontend-1 | grep -A 10 Health
+
+# Probar acceso directo al contenedor
+curl -I http://localhost:5173
 ```
 
 ---
