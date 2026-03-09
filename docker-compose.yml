@@ -30,7 +30,6 @@ services:
       timeout: 10s
       retries: 3
       start_period: 180s
-    # profiles: ["keycloak"]
     networks: [tfm_net]
 
   keycloak-mysql:
@@ -51,7 +50,6 @@ services:
       retries: 3
       start_period: 90s
     ports: ["${KEYCLOAK_MYSQL_PORT}:3306"]   # expone en 3308 para que no choque con tu otro MySQL
-    # profiles: ["db","keycloak"]
     networks: [tfm_net]
 
   mysql:
@@ -71,7 +69,6 @@ services:
       timeout: 5s
       retries: 3
       start_period: 90s
-    # profiles: ["db","users","events"]
     networks: [tfm_net]
 
   users:
@@ -99,7 +96,6 @@ services:
       timeout: 10s
       retries: 3
       start_period: 90s
-    # profiles: ["users"]
     networks: [tfm_net]
 
   events:
@@ -130,7 +126,6 @@ services:
       timeout: 10s
       retries: 3
       start_period: 90s
-    # profiles: ["events"]
     networks: [tfm_net]
 
   surveys:
@@ -185,7 +180,6 @@ services:
       timeout: 10s
       retries: 3
       start_period: 90s
-    # profiles: ["identity"]
     networks: [tfm_net]
 
 
@@ -220,46 +214,7 @@ services:
       timeout: 10s
       retries: 3
       start_period: 90s
-    # profiles: ["gateway"]
     networks: [tfm_net]
 
 
-# Ejemplos de uso:
-# Arrancar todos los servicios: 
-#     docker compose --env-file env/local.env --profile keycloak --profile db --profile users --profile events --profile gateway up -d --build
 
-# Arrancar solo Keycloak
-#     docker compose --env-file env/local.env --profile keycloak up -d
-
-# Arrancar solo la base de datos MySQL
-#     docker compose --env-file env/local.env --profile db up -d
-
-# Arrancar solo Usuarios y sus dependencias (Keycloak + DB):
-#     docker compose --env-file env/local.env --profile keycloak --profile db --profile users up -d
-#   Si mysql y keycloak ya están arriba:
-#     docker compose --profile users up -d
-
-# Arrancar solo Eventos y sus dependencias (Keycloak + DB):
-#     docker compose --env-file env/local.env --profile keycloak --profile db --profile events up -d
-#   Si mysql y keycloak ya están arriba: 
-#     docker compose --env-file env/local.env --profile events up -d
-
-# Cuando se hace un cambio en ../usuarios o ../eventos:
-# 1) mvn -DskipTests package
-# 2) docker compose --env-file env/local.env restart <service>
-
-# Parar/bajar todo:
-#     docker compose --env-file env/local.env stop -> para pero no borra
-#     docker compose --env-file env/local.env down -> para y borra
-#     docker compose --env-file env/local.env down -volumes -> para, borra y elimina volúmenes (datos)
-
-# Logs:
-# docker compose --env-file env/local.env logs -f <service>
-
-
-# Verificar JWKS (JSON Web Key Set) en Keycloak desde el contenedor de usuarios o eventos:
-# docker compose exec usuarios curl -X GET http://keycloak:8080/realms/tfm-bandas/protocol/openid-connect/certs
-# docker compose exec events curl -X GET http://keycloak:8080/realms/tfm-bandas/protocol/openid-connect/certs
-# o
-# docker compose exec usuarios sh -lc "wget -q -O- http://keycloak:8080/realms/tfm-bandas/protocol/openid-connect/certs | head"
-# docker compose exec events sh -lc "wget -q -O- http://keycloak:8080/realms/tfm-bandas/protocol/openid-connect/certs | head"
