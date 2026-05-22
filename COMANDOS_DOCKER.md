@@ -158,7 +158,12 @@ npm run build
 
 # En infrastructure
 docker compose --env-file env/local.env up -d --build frontend
+# Solo frontend (sin reiniciar keycloak, users, events, gateway)
+docker compose --env-file env/local.env up -d --no-deps --build frontend
 docker compose --env-file env/local.env logs -f frontend
+
+# O más rápido si solo necesita reiniciar:
+docker compose --env-file env/local.env restart frontend
 ```
 
 ### C) Frontend con hot reload local
