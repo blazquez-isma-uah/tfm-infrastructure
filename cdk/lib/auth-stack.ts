@@ -13,7 +13,7 @@ export class AuthStack extends cdk.Stack {
     super(scope, id, props);
 
     // ── 1. User Pool ──────────────────────────────────────────────────────
-    // selfSignUpEnabled: false — en una app de gestión de banda, solo el
+    // selfSignUpEnabled: false - en una app de gestión de banda, solo el
     // ADMIN crea usuarios. No tiene sentido el autoregistro público.
     //
     // signInAliases: permitimos login tanto por username como por email,
@@ -48,7 +48,7 @@ export class AuthStack extends cdk.Stack {
     // ── 2. Hosted UI Domain ───────────────────────────────────────────────
     // Cognito necesita un dominio para servir la pantalla de login (Hosted UI).
     // Usamos un dominio de Cognito gratuito (subdominio de auth.eu-west-1.amazoncognito.com).
-    // El prefijo debe ser único globalmente — incluimos el account ID para garantizarlo.
+    // El prefijo debe ser único globalmente - incluimos el account ID para garantizarlo.
     const hostedUiDomain = userPool.addDomain('TfmCognitoDomain', {
       cognitoDomain: {
         domainPrefix: `tfm-bandas-${this.account}`,
@@ -56,7 +56,7 @@ export class AuthStack extends cdk.Stack {
     });
 
     // ── 3. App Client (frontend) ──────────────────────────────────────────
-    // generateSecret: false — cliente público (como frontend-local en Keycloak).
+    // generateSecret: false - cliente público (como frontend-local en Keycloak).
     // Los clientes públicos no pueden guardar un secret de forma segura,
     // por eso usamos PKCE como mecanismo de seguridad en su lugar.
     //
@@ -104,13 +104,13 @@ export class AuthStack extends cdk.Stack {
     new cognito.CfnUserPoolGroup(this, 'AdminGroup', {
       userPoolId: userPool.userPoolId,
       groupName: 'ADMIN',
-      description: 'Administradores del sistema — acceso completo',
+      description: 'Administradores del sistema - acceso completo',
     });
 
     new cognito.CfnUserPoolGroup(this, 'MusicianGroup', {
       userPoolId: userPool.userPoolId,
       groupName: 'MUSICIAN',
-      description: 'Músicos de la banda — lectura, perfil y encuestas',
+      description: 'Músicos de la banda - lectura, perfil y encuestas',
     });
 
     // ── 5. Exponer valores para uso posterior ─────────────────────────────
@@ -122,12 +122,12 @@ export class AuthStack extends cdk.Stack {
     // ── 6. Outputs ────────────────────────────────────────────────────────
     new cdk.CfnOutput(this, 'UserPoolId', {
       value: userPool.userPoolId,
-      description: 'ID del User Pool — necesario para el frontend y los microservicios',
+      description: 'ID del User Pool - necesario para el frontend y los microservicios',
     });
 
     new cdk.CfnOutput(this, 'UserPoolClientId', {
       value: appClient.userPoolClientId,
-      description: 'Client ID del App Client — necesario para el frontend',
+      description: 'Client ID del App Client - necesario para el frontend',
     });
 
     new cdk.CfnOutput(this, 'JwksUri', {
