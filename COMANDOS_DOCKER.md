@@ -1,4 +1,4 @@
-# Guía rápida Docker/Docker Compose — TFM Bandas
+# Guía rápida Docker/Docker Compose - TFM Bandas
 
 Cheat sheet breve para desarrollo diario. Cubre backend + frontend sin `profiles`.
 
@@ -154,7 +154,7 @@ Nota: `docker-compose.override.yml` ya monta `target/app.jar` para backend.
 ### B) Frontend en Docker
 ```bash
 # En ../front-web
-npm run build
+npm run build:docker
 
 # En infrastructure
 docker compose --env-file env/local.env up -d --build frontend

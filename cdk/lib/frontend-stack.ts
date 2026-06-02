@@ -58,7 +58,7 @@ export class FrontendStack extends cdk.Stack {
     // Se registra GitHub como proveedor de identidad de confianza en esta cuenta AWS. 
     // GitHub Actions puede entonces pedir credenciales temporales
     // a AWS asumiendo un rol, sin necesidad de Access Keys estáticas.
-    // Se crea una sola vez por cuenta AWS — CDK lo gestiona como recurso.
+    // Se crea una sola vez por cuenta AWS - CDK lo gestiona como recurso.
     const githubProvider = new iam.OpenIdConnectProvider(this, 'GithubOidcProvider', {
       url: 'https://token.actions.githubusercontent.com',
       clientIds: ['sts.amazonaws.com'],
