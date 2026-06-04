@@ -36,4 +36,10 @@ new TfmLambdaStack(app, 'TfmLambdaStack', {
   description: 'TFM Bandas de Musica - Lambdas, API Gateway y JWT Authorizer',
   cognitoIssuerUri: authStack.issuerUri,
   cognitoClientId: authStack.userPoolClientId,
+  cognitoJwksUri: authStack.jwksUri,
+  cognitoUserPoolId: authStack.userPoolId,
+  // Paths a los repositorios de cada microservicio.
+  // Ajustar segun la ubicacion local de cada desarrollador.
+  // En CI/CD estos paths se configuraran como variables de entorno o parametros del pipeline.
+  identityServicePath: '../../identity',
 });
