@@ -204,8 +204,23 @@ export class TfmLambdaStack extends cdk.Stack {
     const cfnIdentityLambda = identityLambda.node.defaultChild as lambda.CfnFunction;
     cfnIdentityLambda.snapStart = {
       // La activación de SnapStart se hace sobre la versión publicada de la Lambda, no sobre $LATEST.
-      applyOn: 'PublishedVersions',
+      // applyOn: 'PublishedVersions',
+      // SnapStart descartado.
+      // El restore (~1s) no compensa con el tiempo de restablecimiento de conexiones HTTP en la primera invocación post-restore (~16s)
+      applyOn: 'None', // Sin publicar versiones, SnapStart se aplica a $LATEST. Útil en desarrollo para evitar tener que publicar cada vez.
     };
+
+    // Alias 'live' apuntando a la version publicada con SnapStart.
+    // SnapStart solo aplica a versiones publicadas, no a $LATEST.
+    // Sin este alias, API Gateway invocaria $LATEST y el snapshot
+    // nunca se usaria - el cold start seguiria siendo de ~9-12 segundos.
+    // Con el alias, cada deploy publica una nueva version con su snapshot
+    // y el alias se actualiza para apuntar a ella.
+    const identityAlias = new lambda.Alias(this, 'IdentityAlias', {
+      aliasName: 'live',
+      version: identityLambda.currentVersion,
+      description: 'Alias live - apunta a la version publicada con SnapStart activo',
+    });
 
     // 3c. Ruta en API Gateway para MS Identity
     // JWT Authorizer aplicado: Identity requiere autenticación en todos sus endpoints.
@@ -213,7 +228,7 @@ export class TfmLambdaStack extends cdk.Stack {
     // authorizationScopes: vacío - no usamos OAuth2 scopes, la autorización  la gestiona Spring Security con @PreAuthorize dentro de la Lambda.
     const identityIntegration = new apigatewayv2integrations.HttpLambdaIntegration(
       'IdentityIntegration',
-      identityLambda,
+      identityAlias,
     );
 
     // ANY /api/identity/{proxy+} captura cualquier método HTTP y cualquier sub-path bajo /api/identity/. 
@@ -242,6 +257,11 @@ export class TfmLambdaStack extends cdk.Stack {
     new cdk.CfnOutput(this, 'IdentityLambdaArn', {
       value: identityLambda.functionArn,
       description: 'ARN de la Lambda MS Identity',
+    });
+
+    new cdk.CfnOutput(this, 'IdentityAliasArn', {
+      value: identityAlias.functionArn,
+      description: 'ARN del alias live de Lambda MS Identity - SnapStart activo',
     });
   }
 }
