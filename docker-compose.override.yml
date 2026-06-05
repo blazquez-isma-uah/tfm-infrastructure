@@ -2,7 +2,7 @@
 services:
   users:
     volumes:
-      - "${USUARIOS_DIR}/target/app.jar:/app/app.jar:ro"
+      - "${USUARIOS_DIR}/target/app.jar:/app/app-local.jar:ro"
     # Opcional: logs más verbosos en dev
     # environment:
     #   LOGGING_LEVEL_ORG_SPRINGFRAMEWORK_SECURITY: DEBUG
@@ -10,21 +10,21 @@ services:
 
   events:
     volumes:
-      - "${EVENTS_DIR}/target/app.jar:/app/app.jar:ro"
+      - "${EVENTS_DIR}/target/app.jar:/app/app-local.jar:ro"
     # environment:
     #   LOGGING_LEVEL_ORG_SPRINGFRAMEWORK_SECURITY: DEBUG
     #   LOGGING_LEVEL_ORG_SPRINGFRAMEWORK_SECURITY_OAUTH2: DEBUG
 
   surveys:
     volumes:
-      - "${SURVEYS_DIR}/target/app.jar:/app/app.jar:ro"
+      - "${SURVEYS_DIR}/target/app.jar:/app/app-local.jar:ro"
     # Opcional: logs más detallados en desarrollo
     # environment:
     #   LOGGING_LEVEL_COM_TFM_BANDAS_SURVEYS: DEBUG
 
   identity:
     volumes:
-      - "${IDENTITY_DIR}/target/app.jar:/app/app.jar:ro"
+      - "${IDENTITY_DIR}/target/app.jar:/app/app-local.jar:ro"
     # Opcional: logs más detallados en desarrollo
     # environment:
     #   LOGGING_LEVEL_COM_TFM_BANDAS_IDENTITY: DEBUG
