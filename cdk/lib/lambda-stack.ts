@@ -179,9 +179,8 @@ export class TfmLambdaStack extends cdk.Stack {
       // El código de la Lambda se empaqueta como un JAR ejecutable (con todas las dependencias incluidas) usando el plugin maven-shade.
       code: lambda.Code.fromAsset(props.identityServicePath + '/target/app.jar'),
       role: identityRole,
-      // 512 MB: suficiente para Spring Boot con SnapStart. Sin SnapStart se necesitaría
-      // más memoria para acelerar el cold start, pero SnapStart lo hace innecesario.
-      memorySize: 512,
+      // 1024MB de memoria para mejorar el rendimiento de arranque de Spring Boot.
+      memorySize: 1024,
       // 30s: Spring Boot con SnapStart arranca en 1-2s. 
       // 30s es margen suficiente para el primer cold start real si SnapStart falla por algún motivo.
       timeout: cdk.Duration.seconds(30),
