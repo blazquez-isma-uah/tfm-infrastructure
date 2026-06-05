@@ -2,7 +2,6 @@ import * as cdk from 'aws-cdk-lib';
 import * as apigatewayv2 from 'aws-cdk-lib/aws-apigatewayv2';
 import * as apigatewayv2integrations from 'aws-cdk-lib/aws-apigatewayv2-integrations';
 import * as lambda from 'aws-cdk-lib/aws-lambda';
-import * as ecr from 'aws-cdk-lib/aws-ecr';
 import * as iam from 'aws-cdk-lib/aws-iam';
 import * as ssm from 'aws-cdk-lib/aws-ssm';
 import { Construct } from 'constructs';
@@ -40,7 +39,8 @@ export interface LambdaStackProps extends cdk.StackProps {
   cognitoUserPoolId: string;
 
   /** Path absoluto o relativo al directorio raiz de cada microservicio.
-   * Se usa para que CDK localice el Dockerfile.lambda y construya la imagen Docker.
+   * Se usa para que CDK localice el JAR compilado por maven-shade (target/app.jar)
+   * y lo suba a Lambda como asset ZIP.
    * Relativo al directorio cdk/ o absoluto segun el entorno de desarrollo.
    */
   identityServicePath: string;
@@ -66,7 +66,7 @@ export class TfmLambdaStack extends cdk.Stack {
     //
     // HTTP API (apigatewayv2) en lugar de REST API (apigateway) por tres razones:
     //   1. JWT Authorizer nativo: no requiere Lambda Authorizer adicional
-    //   2. Payload format v2: compatible con HttpApiV2ProxyRequest en los LambdaHandlers
+    //   2. Payload format v2: compatible con SpringDelegatingLambdaContainerHandler
     //   3. Coste y latencia: ~3.5x más barata y ~5ms menos de overhead que REST API
     //
     // corsAllowance NO se configura aquí porque CORS lo gestiona el frontend a través de CloudFront. 
@@ -169,7 +169,6 @@ export class TfmLambdaStack extends cdk.Stack {
       functionName: 'tfm-identity',
       description: 'MS Identity - Adaptador Cognito Admin API. Stateless, sin BD.',
       runtime: lambda.Runtime.JAVA_21, // runtime gestionado de AWS para Java 21
-      // handler: 'com.tfm.bandas.identity.LambdaHandler::handleRequest', // clase y metodo que Lambda invoca por cada peticion entrante
       // Handler oficial delegado de aws-serverless-java-container 2.x.
       // No usamos un handler propio: SpringDelegatingLambdaContainerHandler
       // procesa correctamente las peticiones HTTP API v2 mediante
@@ -181,8 +180,8 @@ export class TfmLambdaStack extends cdk.Stack {
       role: identityRole,
       // 1024MB de memoria para mejorar el rendimiento de arranque de Spring Boot.
       memorySize: 1024,
-      // 30s: Spring Boot con SnapStart arranca en 1-2s. 
-      // 30s es margen suficiente para el primer cold start real si SnapStart falla por algún motivo.
+      // 30s: con SnapStart + CRaC el cold start total es de ~4-7s
+      // 30s da margen suficiente ante cualquier degradacion puntual de red o de restauracion.
       timeout: cdk.Duration.seconds(30),
       environment: {
         SPRING_PROFILES_ACTIVE: 'aws',
@@ -196,17 +195,18 @@ export class TfmLambdaStack extends cdk.Stack {
       },
     });
 
-    // SnapStart: toma un snapshot del proceso Java despues de que el bloque estatico de LambdaHandler haya inicializado Spring Boot completo.
-    // Las invocaciones posteriores restauran ese snapshot en ~1-2s en lugar de arrancar Spring Boot desde cero (~10-15s).
-    // Escape hatch: acceder al recurso CloudFormation subyacente para activar SnapStart.
-    // CDK L2 (Function) no expone SnapStart directamente - es necesario usar el recurso L1 (CfnFunction) subyacente.
+    // SnapStart: toma un snapshot del proceso Java despues de que SpringDelegatingLambdaContainerHandler
+    // ha completado la inicializacion asincrona de Spring Boot durante la fase INIT.
+    // Con SnapStart + CRaC, el cold start total para el usuario se reduce significativamente
+    // El hook CRaC afterRestore en SnapStartPrimingResource recrea
+    // el cliente Cognito y pre-calienta la conexion antes de que llegue la primera peticion real.
+    // Escape hatch: CDK L2 (Function) no expone SnapStart en su API de alto nivel.
+    // Se accede al recurso CloudFormation subyacente (CfnFunction) para configurarlo.
     const cfnIdentityLambda = identityLambda.node.defaultChild as lambda.CfnFunction;
     cfnIdentityLambda.snapStart = {
-      // La activación de SnapStart se hace sobre la versión publicada de la Lambda, no sobre $LATEST.
-      // applyOn: 'PublishedVersions',
-      // SnapStart descartado.
-      // El restore (~1s) no compensa con el tiempo de restablecimiento de conexiones HTTP en la primera invocación post-restore (~16s)
-      applyOn: 'None', // Sin publicar versiones, SnapStart se aplica a $LATEST. Útil en desarrollo para evitar tener que publicar cada vez.
+      // SnapStart activo sobre versiones publicadas, no sobre $LATEST.
+      // Requiere el alias 'live' para que API Gateway invoque la version publicada con snapshot.
+      applyOn: 'PublishedVersions',
     };
 
     // Alias 'live' apuntando a la version publicada con SnapStart.
