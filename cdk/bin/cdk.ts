@@ -42,4 +42,5 @@ new TfmLambdaStack(app, 'TfmLambdaStack', {
   // Ajustar segun la ubicacion local de cada desarrollador.
   // En CI/CD estos paths se configuraran como variables de entorno o parametros del pipeline.
   identityServicePath: '../../identity',
+  usersServicePath: '../../users',
 });

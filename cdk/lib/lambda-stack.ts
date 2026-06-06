@@ -44,6 +44,9 @@ export interface LambdaStackProps extends cdk.StackProps {
    * Relativo al directorio cdk/ o absoluto segun el entorno de desarrollo.
    */
   identityServicePath: string;
+
+  /** Path al directorio raiz de MS Users. */
+  usersServicePath: string;
 }
 
 export class TfmLambdaStack extends cdk.Stack {
@@ -79,6 +82,7 @@ export class TfmLambdaStack extends cdk.Stack {
       // Sin defaultAuthorizer: las rutas públicas no deben heredar el authorizer.
       // El JWT Authorizer se asigna ruta a ruta de forma explícita.
     });
+    this.apiUrl = api.apiEndpoint;
 
     // ── 2. JWT Authorizer ──────────────────────────────────────────────────
     //
@@ -240,9 +244,120 @@ export class TfmLambdaStack extends cdk.Stack {
       authorizer: jwtAuth,
     });
 
-    // ── Outputs ────────────────────────────────────────────────────────────
-    this.apiUrl = api.apiEndpoint;
 
+    // 4. MS Users
+    // Gestiona perfiles de usuario, instrumentos y roles.
+    // Delega la gestion de identidades en Cognito a MS Identity via Feign.
+    // Expone tres grupos de rutas: /api/users/**, /api/instruments/**, /api/roles/**
+
+    // 4a. IAM Role para Lambda MS Users
+    // Users necesita:
+    //   - AWSLambdaBasicExecutionRole: escribir logs en CloudWatch (obligatorio)
+    // Las credenciales de BD se inyectan como variables de entorno desde SSM en tiempo de deploy via CloudFormation dynamic references.
+    // No necesita ssm:GetParameter en su IAM role porque CloudFormation resuelve los parametros SSM durante el deploy, no en tiempo de ejecucion.
+    const usersRole = new iam.Role(this, 'UsersLambdaRole', {
+      assumedBy: new iam.ServicePrincipal('lambda.amazonaws.com'),
+      description: 'IAM Role para Lambda MS Users - acceso a CloudWatch',
+      managedPolicies: [
+        iam.ManagedPolicy.fromAwsManagedPolicyName('service-role/AWSLambdaBasicExecutionRole'),
+      ],
+    });
+
+    // 4b. Lambda Function para MS Users
+    const usersLambda = new lambda.Function(this, 'UsersLambda', {
+      functionName: 'tfm-users',
+      description: 'MS Users - Gestion de perfiles, instrumentos y roles.',
+      runtime: lambda.Runtime.JAVA_21,
+      handler: 'com.amazonaws.serverless.proxy.spring.SpringDelegatingLambdaContainerHandler::handleRequest',
+      code: lambda.Code.fromAsset(props.usersServicePath + '/target/app.jar'),
+      role: usersRole,
+      memorySize: 1024,
+      // 45s: con el cold start de MS Identity + el tiempo de procesamiento + overhead de red, 30s puede ser justo para las llamadas Feign.
+      timeout: cdk.Duration.seconds(45),
+      environment: {
+        SPRING_PROFILES_ACTIVE: 'aws',
+        MAIN_CLASS: 'com.tfm.bandas.users.UsuariosApplication',
+        COGNITO_JWKS_URI: props.cognitoJwksUri,
+        COGNITO_ISSUER_URI: props.cognitoIssuerUri,
+        // URL base del API Gateway: MS Users la usa para llamar a MS Identity via Feign.
+        IDENTITY_SERVICE_URI: this.apiUrl,
+        // Credenciales de BD resueltas desde SSM Parameter Store por CloudFormation en deploy.
+        // El valor real nunca aparece en el template de CloudFormation ni en los logs de CDK.
+        DB_URL: ssm.StringParameter.valueForStringParameter(this, '/tfm/db/url/users'),
+        DB_USERNAME: ssm.StringParameter.valueForStringParameter(this, '/tfm/db/username'),
+        DB_PASSWORD: ssm.StringParameter.valueForStringParameter(this, '/tfm/db/password'),
+      },
+    });
+
+    // SnapStart activo con CRaC.
+    // SnapStartPrimingResource hace calentamiento de la conexion a BD en afterRestore.
+    const cfnUsersLambda = usersLambda.node.defaultChild as lambda.CfnFunction;
+    cfnUsersLambda.snapStart = {
+      applyOn: 'PublishedVersions',
+    };
+
+    // Alias 'live' apuntando a la version publicada con SnapStart.
+    const usersAlias = new lambda.Alias(this, 'UsersAlias', {
+      aliasName: 'live',
+      version: usersLambda.currentVersion,
+      description: 'Alias live - apunta a la version publicada con SnapStart activo',
+    });
+
+    // 4c. Rutas en API Gateway para MS Users
+    // Los tres grupos de rutas apuntan a la misma Lambda.
+    // La autorizacion por metodo la gestiona Spring Security con @PreAuthorize.
+    const usersIntegration = new apigatewayv2integrations.HttpLambdaIntegration(
+      'UsersIntegration',
+      usersAlias,
+    );
+
+    api.addRoutes({
+      path: '/api/users/{proxy+}',
+      methods: [apigatewayv2.HttpMethod.ANY],
+      integration: usersIntegration,
+      authorizer: jwtAuth,
+    });
+
+    api.addRoutes({
+      path: '/api/instruments/{proxy+}',
+      methods: [apigatewayv2.HttpMethod.ANY],
+      integration: usersIntegration,
+      authorizer: jwtAuth,
+    });
+
+    api.addRoutes({
+      path: '/api/roles/{proxy+}',
+      methods: [apigatewayv2.HttpMethod.ANY],
+      integration: usersIntegration,
+      authorizer: jwtAuth,
+    });
+
+    // Rutas base sin sub-path (GET /api/users, GET /api/roles, GET /api/instruments)
+    // {proxy+} requiere al menos un segmento y no captura el path base.
+    // Se necesita una ruta adicional para cada path raiz.
+    api.addRoutes({
+      path: '/api/users',
+      methods: [apigatewayv2.HttpMethod.ANY],
+      integration: usersIntegration,
+      authorizer: jwtAuth,
+    });
+
+    api.addRoutes({
+      path: '/api/instruments',
+      methods: [apigatewayv2.HttpMethod.ANY],
+      integration: usersIntegration,
+      authorizer: jwtAuth,
+    });
+
+    api.addRoutes({
+      path: '/api/roles',
+      methods: [apigatewayv2.HttpMethod.ANY],
+      integration: usersIntegration,
+      authorizer: jwtAuth,
+    });
+
+
+    // ── Outputs ────────────────────────────────────────────────────────────
     new cdk.CfnOutput(this, 'ApiGatewayUrl', {
       value: api.apiEndpoint,
       description: 'URL base del API Gateway - usar como base para todas las llamadas REST',
@@ -261,6 +376,16 @@ export class TfmLambdaStack extends cdk.Stack {
     new cdk.CfnOutput(this, 'IdentityAliasArn', {
       value: identityAlias.functionArn,
       description: 'ARN del alias live de Lambda MS Identity - SnapStart activo',
+    });
+    
+    new cdk.CfnOutput(this, 'UsersLambdaArn', {
+      value: usersLambda.functionArn,
+      description: 'ARN de la Lambda MS Users',
+    });
+
+    new cdk.CfnOutput(this, 'UsersAliasArn', {
+      value: usersAlias.functionArn,
+      description: 'ARN del alias live de Lambda MS Users - SnapStart activo',
     });
   }
 }
