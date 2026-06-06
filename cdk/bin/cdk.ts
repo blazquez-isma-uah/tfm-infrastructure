@@ -38,9 +38,10 @@ new TfmLambdaStack(app, 'TfmLambdaStack', {
   cognitoClientId: authStack.userPoolClientId,
   cognitoJwksUri: authStack.jwksUri,
   cognitoUserPoolId: authStack.userPoolId,
-  // Paths a los repositorios de cada microservicio.
-  // Ajustar segun la ubicacion local de cada desarrollador.
-  // En CI/CD estos paths se configuraran como variables de entorno o parametros del pipeline.
   identityServicePath: '../../identity',
   usersServicePath: '../../users',
+  eventsServicePath: '../../events',
+  surveysServiceDeleteByEventIdPath: '/api/surveys/event/',
+  surveysServicePath: '../../surveys',
+  eventsServiceExistsPath: '/api/events/',
 });
