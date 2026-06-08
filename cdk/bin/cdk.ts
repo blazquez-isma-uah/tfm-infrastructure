@@ -43,5 +43,5 @@ new TfmLambdaStack(app, 'TfmLambdaStack', {
   eventsServicePath: '../../events',
   surveysServiceDeleteByEventIdPath: '/api/surveys/event/',
   surveysServicePath: '../../surveys',
-  eventsServiceExistsPath: '/api/events/',
+  eventsServiceExistsPath: '/api/events/{eventId}',
 });
