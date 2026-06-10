@@ -51,7 +51,7 @@ export class FrontendStack extends cdk.Stack {
       // ALLOW_ALL en allowedMethods: la API recibe GET, POST, PUT, DELETE,
       // OPTIONS (preflight CORS), HEAD y PATCH.
       //
-      // ALL_VIEWER en originRequestPolicy: CloudFront reenvía al API Gateway
+      // ALL_VIEWER_EXCEPT_HOST_HEADER en originRequestPolicy: CloudFront reenvía al API Gateway
       // todos los headers del cliente, incluyendo Authorization con el JWT.
       // Sin esto, el JWT no llegaría a Lambda y todas las peticiones
       // devolverían 401.
