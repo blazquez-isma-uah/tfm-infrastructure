@@ -11,10 +11,6 @@ const env = {
   region: 'eu-west-1',
 };
 
-new FrontendStack(app, 'TfmFrontendStack', {
-  env,
-  description: 'TFM Bandas de Musica - Frontend React en S3 + CloudFront',
-});
 
 const authStack = new AuthStack(app, 'TfmAuthStack', {
   env,
@@ -31,7 +27,10 @@ new DatabaseStack(app, 'TfmDatabaseStack', {
 // y no puede destruirse mientras TfmLambdaStack lo consuma.
 // Trade-off aceptado conscientemente: los valores de Cognito (User Pool, Client ID) son estables y no se recrearán. 
 // Así se evita hardcodear valores que podrían desincronizarse si el stack de autenticación evolucionara.
-new TfmLambdaStack(app, 'TfmLambdaStack', {
+// TfmLambdaStack se instancia antes que FrontendStack porque FrontendStack
+// necesita el endpoint del API Gateway para configurar el behavior /api/* de CloudFront.
+// TfmLambdaStack expone apiUrl como propiedad publica para este proposito.
+const lambdaStack = new TfmLambdaStack(app, 'TfmLambdaStack', {
   env,
   description: 'TFM Bandas de Musica - Lambdas, API Gateway y JWT Authorizer',
   cognitoIssuerUri: authStack.issuerUri,
@@ -44,4 +43,13 @@ new TfmLambdaStack(app, 'TfmLambdaStack', {
   surveysServiceDeleteByEventIdPath: '/api/surveys/event/',
   surveysServicePath: '../../surveys',
   eventsServiceExistsPath: '/api/events/{eventId}',
+});
+
+// FrontendStack recibe el endpoint del API Gateway via cross-stack reference.
+// Esto garantiza que el hostname de CloudFront siempre apunta al API Gateway
+// correcto, sin valores hardcodeados que puedan desincronizarse.
+new FrontendStack(app, 'TfmFrontendStack', {
+  env,
+  description: 'TFM Bandas de Musica - Frontend React en S3 + CloudFront',
+  apiGatewayEndpoint: lambdaStack.apiUrl,
 });
