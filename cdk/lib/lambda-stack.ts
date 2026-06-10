@@ -295,6 +295,11 @@ export class TfmLambdaStack extends cdk.Stack {
         // El valor real nunca aparece en el template de CloudFormation ni en los logs de CDK.
         DB_URL: ssm.StringParameter.valueForStringParameter(this, '/tfm/db/url/users'),
         DB_USERNAME: ssm.StringParameter.valueForStringParameter(this, '/tfm/db/username'),
+        // DB_PASSWORD se lee de SSM como String (no SecureString) por decision documentada.
+        // CloudFormation no puede resolver {{resolve:ssm-secure:...}} en variables de entorno de Lambda. 
+        // Lambda cifra las variables de entorno at rest con KMS por defecto, lo que da un nivel de proteccion equivalente.
+        // La alternativa de Secrets Manager (SecretValue.secretsManager) introduciria
+        // una dependencia adicional sin beneficio de seguridad real en este contexto.
         DB_PASSWORD: ssm.StringParameter.valueForStringParameter(this, '/tfm/db/password'),
       },
     });
@@ -377,9 +382,6 @@ export class TfmLambdaStack extends cdk.Stack {
       ],
     });
 
-    // Permiso para leer los parámetros de BD desde SSM
-    // Nota: no se requiere permiso ssm:GetParameter en el role; CloudFormation resuelve los parámetros SSM al desplegar (valueForStringParameter).
-
     // 2. Lambda con JAR Shade (no imagen Docker — SnapStart no soporta imágenes Docker)
     const eventsLambda = new lambda.Function(this, 'EventsLambda', {
       functionName: 'tfm-events',
@@ -398,6 +400,11 @@ export class TfmLambdaStack extends cdk.Stack {
         SURVEYS_SERVICE_DELETE_BY_EVENT_ID_PATH: props.surveysServiceDeleteByEventIdPath,
         DB_URL: ssm.StringParameter.valueForStringParameter(this, '/tfm/db/url/events'),
         DB_USERNAME: ssm.StringParameter.valueForStringParameter(this, '/tfm/db/username'),
+        // DB_PASSWORD se lee de SSM como String (no SecureString) por decision documentada.
+        // CloudFormation no puede resolver {{resolve:ssm-secure:...}} en variables de entorno de Lambda. 
+        // Lambda cifra las variables de entorno at rest con KMS por defecto, lo que da un nivel de proteccion equivalente.
+        // La alternativa de Secrets Manager (SecretValue.secretsManager) introduciria
+        // una dependencia adicional sin beneficio de seguridad real en este contexto.
         DB_PASSWORD: ssm.StringParameter.valueForStringParameter(this, '/tfm/db/password'),
       },
     });
@@ -446,9 +453,6 @@ export class TfmLambdaStack extends cdk.Stack {
         ),
       ],
     });
-
-    // Permiso para leer los parámetros de BD desde SSM
-    // Nota: no se requiere permiso ssm:GetParameter en el role; CloudFormation resuelve los parámetros SSM al desplegar (valueForStringParameter).
 
     // 2. Lambda con JAR Shade (no imagen Docker — SnapStart no soporta imágenes Docker)
     const surveysLambda = new lambda.Function(this, 'SurveysLambda', {

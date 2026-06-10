@@ -5,10 +5,19 @@ import * as origins from 'aws-cdk-lib/aws-cloudfront-origins';
 import * as iam from 'aws-cdk-lib/aws-iam';
 import { Construct } from 'constructs';
 
-export class FrontendStack extends cdk.Stack {
-  // Exponemos estos valores para usarlos desde GitHub Actions
+export interface FrontendStackProps extends cdk.StackProps {
+  /**
+   * Endpoint completo del API Gateway (formato: https://XXXXX.execute-api.eu-west-1.amazonaws.com).
+   * Se usa para configurar el behavior /api/* de CloudFront de forma dinamica,
+   * evitando hardcodear el hostname que cambia entre cuentas y al recrear el API.
+   * Proviene de TfmLambdaStack.apiUrl via cross-stack reference de CloudFormation.
+   */
+  apiGatewayEndpoint: string;
+}
 
-  constructor(scope: Construct, id: string, props?: cdk.StackProps) {
+export class FrontendStack extends cdk.Stack {
+
+  constructor(scope: Construct, id: string, props: FrontendStackProps) {
     super(scope, id, props);
 
     // ── 1. S3 bucket PRIVADO ──────────────────────────────────────────────
@@ -23,16 +32,20 @@ export class FrontendStack extends cdk.Stack {
     });
 
     // ── 2. Origin para API Gateway ────────────────────────────────────────
-    // HttpOrigin apunta al API Gateway HTTP API.
-    // Se extrae solo el hostname del endpoint (sin https://) porque
-    // HttpOrigin lo requiere así.
-    const apiGatewayOrigin = new origins.HttpOrigin(
-      '8m4soc99t7.execute-api.eu-west-1.amazonaws.com',
-      {
-        // API Gateway HTTP API usa HTTPS en el puerto 443
-        protocolPolicy: cloudfront.OriginProtocolPolicy.HTTPS_ONLY,
-      }
+    // Se extrae el hostname del endpoint completo usando Fn.select + Fn.split.
+    // El endpoint tiene formato "https://XXXXX.execute-api.eu-west-1.amazonaws.com".
+    // Split por '/' produce: ['https:', '', 'XXXXX.execute-api...'], indice 2 = hostname.
+    // Fn.select es una funcion intrinseca de CloudFormation que se resuelve en deploy,
+    // por lo que funciona correctamente con cross-stack references (tokens de CDK).
+    const apiGatewayHostname = cdk.Fn.select(
+      2,
+      cdk.Fn.split('/', props.apiGatewayEndpoint)
     );
+
+    const apiGatewayOrigin = new origins.HttpOrigin(apiGatewayHostname, {
+      // API Gateway HTTP API usa HTTPS en el puerto 443
+      protocolPolicy: cloudfront.OriginProtocolPolicy.HTTPS_ONLY,
+    });
 
     // ── 3. CloudFront Distribution ────────────────────────────────────────
     const distribution = new cloudfront.Distribution(this, 'FrontendDistribution', {
@@ -56,14 +69,24 @@ export class FrontendStack extends cdk.Stack {
       // Sin esto, el JWT no llegaría a Lambda y todas las peticiones
       // devolverían 401.
       additionalBehaviors: {
+         // No se necesita CORS aquí: frontend y API comparten el mismo
+         // dominio CloudFront, por lo que el navegador no envía preflight.
         '/api/*': {
           origin: apiGatewayOrigin,
           viewerProtocolPolicy: cloudfront.ViewerProtocolPolicy.REDIRECT_TO_HTTPS,
           cachePolicy: cloudfront.CachePolicy.CACHING_DISABLED,
           allowedMethods: cloudfront.AllowedMethods.ALLOW_ALL,
           originRequestPolicy: cloudfront.OriginRequestPolicy.ALL_VIEWER_EXCEPT_HOST_HEADER,
-          // No se necesita CORS aquí: frontend y API comparten el mismo
-          // dominio CloudFront, por lo que el navegador no envía preflight.
+        },
+        // El endpoint de health de RDS tambien se enruta al API Gateway.
+        // Esta ruta es publica (sin JWT) y se llama antes del login
+        // para comprobar el estado de la base de datos.
+        '/health/*': {
+          origin: apiGatewayOrigin,
+          viewerProtocolPolicy: cloudfront.ViewerProtocolPolicy.REDIRECT_TO_HTTPS,
+          cachePolicy: cloudfront.CachePolicy.CACHING_DISABLED,
+          allowedMethods: cloudfront.AllowedMethods.ALLOW_ALL,
+          originRequestPolicy: cloudfront.OriginRequestPolicy.ALL_VIEWER_EXCEPT_HOST_HEADER,
         },
       },
       defaultRootObject: 'index.html',
