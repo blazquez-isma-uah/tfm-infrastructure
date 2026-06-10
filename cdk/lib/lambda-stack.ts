@@ -448,12 +448,7 @@ export class TfmLambdaStack extends cdk.Stack {
     });
 
     // Permiso para leer los parámetros de BD desde SSM
-    surveysRole.addToPolicy(new iam.PolicyStatement({
-      actions: ['ssm:GetParameter'],
-      resources: [
-        `arn:aws:ssm:eu-west-1:229502948023:parameter/tfm/db/*`,
-      ],
-    }));
+    // Nota: no se requiere permiso ssm:GetParameter en el role; CloudFormation resuelve los parámetros SSM al desplegar (valueForStringParameter).
 
     // 2. Lambda con JAR Shade (no imagen Docker — SnapStart no soporta imágenes Docker)
     const surveysLambda = new lambda.Function(this, 'SurveysLambda', {
