@@ -2,7 +2,6 @@ import * as cdk from 'aws-cdk-lib';
 import * as ec2 from 'aws-cdk-lib/aws-ec2';
 import * as rds from 'aws-cdk-lib/aws-rds';
 import * as ssm from 'aws-cdk-lib/aws-ssm';
-import * as secretsmanager from 'aws-cdk-lib/aws-secretsmanager';
 import { Construct } from 'constructs';
 
 export class DatabaseStack extends cdk.Stack {
@@ -10,6 +9,7 @@ export class DatabaseStack extends cdk.Stack {
   // Exponemos el endpoint para que LambdaStack pueda construir las URLs de conexión
   public readonly dbEndpoint: string;
   public readonly dbPort: string;
+  public readonly dbInstanceIdentifier: string;
 
   constructor(scope: Construct, id: string, props?: cdk.StackProps) {
     super(scope, id, props);
@@ -91,7 +91,8 @@ export class DatabaseStack extends cdk.Stack {
     // ── 4. Exponer endpoint ───────────────────────────────────────────────
     this.dbEndpoint = dbInstance.dbInstanceEndpointAddress;
     this.dbPort = dbInstance.dbInstanceEndpointPort;
-
+    this.dbInstanceIdentifier = dbInstance.instanceIdentifier;
+    
     // ── 5. SSM Parameters ─────────────────────────────────────────────────
     // Almacenamos en SSM los datos de conexion de cada microservicio.
     // Las Lambdas leeran estos parametros en tiempo de arranque.
