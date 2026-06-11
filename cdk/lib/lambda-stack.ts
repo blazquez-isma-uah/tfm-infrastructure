@@ -5,7 +5,8 @@ import * as lambda from 'aws-cdk-lib/aws-lambda';
 import * as iam from 'aws-cdk-lib/aws-iam';
 import * as ssm from 'aws-cdk-lib/aws-ssm';
 import { Construct } from 'constructs';
-import { HttpAuthorizer, IHttpRouteAuthorizer } from 'aws-cdk-lib/aws-apigatewayv2';
+import * as events from 'aws-cdk-lib/aws-events';
+import * as targets from 'aws-cdk-lib/aws-events-targets';
 
 
 /**
@@ -59,6 +60,9 @@ export interface LambdaStackProps extends cdk.StackProps {
   
   /** Path de API que MS Surveys usa para llamar a MS Events y validar existencia de evento. */
   eventsServiceExistsPath: string;
+
+  /** Identificador de la instancia RDS. Usado por las Lambdas de scheduler y health check. */
+  rdsInstanceId: string;
 }
 
 export class TfmLambdaStack extends cdk.Stack {
@@ -511,6 +515,140 @@ export class TfmLambdaStack extends cdk.Stack {
       integration: surveysIntegration,
       authorizer: jwtAuth,
     });
+
+
+    // ─── Lambda Health Check — arranque de RDS y warm-up ─────────────────────────
+    // Endpoint público GET /health/database llamado desde LoginPage antes del login.
+    // Comprueba el estado de RDS, la arranca si está parada, y lanza warm-up de las
+    // Lambdas de negocio en fire-and-forget para aprovechar el tiempo de arranque de RDS.
+
+    const healthRole = new iam.Role(this, 'RdsHealthLambdaRole', {
+      assumedBy: new iam.ServicePrincipal('lambda.amazonaws.com'),
+      description: 'IAM Role para Lambda de health check y arranque de RDS',
+      managedPolicies: [
+        iam.ManagedPolicy.fromAwsManagedPolicyName('service-role/AWSLambdaBasicExecutionRole'),
+      ],
+      inlinePolicies: {
+        RdsHealthPolicy: new iam.PolicyDocument({
+          statements: [
+            new iam.PolicyStatement({
+              effect: iam.Effect.ALLOW,
+              // DescribeDBInstances: leer el estado actual de RDS
+              // StartDBInstance: arrancar RDS cuando está parada
+              actions: ['rds:DescribeDBInstances', 'rds:StartDBInstance'],
+              resources: [
+                `arn:aws:rds:eu-west-1:${this.account}:db:${props.rdsInstanceId}`,
+              ],
+            }),
+            new iam.PolicyStatement({
+              effect: iam.Effect.ALLOW,
+              // InvokeFunction: invocar las 4 Lambdas de negocio para warm-up
+              actions: ['lambda:InvokeFunction'],
+              resources: [
+                identityAlias.functionArn,
+                usersAlias.functionArn,
+                eventsAlias.functionArn,
+                surveysAlias.functionArn,
+              ],
+            }),
+          ],
+        }),
+      },
+    });
+
+    const healthLambda = new lambda.Function(this, 'RdsHealthLambda', {
+      functionName: 'tfm-rds-health',
+      description: 'Health check de RDS: comprueba estado, arranca si parada, warm-up de Lambdas',
+      runtime: lambda.Runtime.NODEJS_20_X,
+      handler: 'index.handler',
+      code: lambda.Code.fromAsset('./lambdas/rds-health'),
+      role: healthRole,
+      memorySize: 256,
+      timeout: cdk.Duration.seconds(10),
+      environment: {
+        // Identificador de la instancia RDS para las llamadas a la API de RDS.
+        RDS_INSTANCE_ID: props.rdsInstanceId,
+        // ARNs de los alias live de las Lambdas de negocio para warm-up.
+        // Se pasan como JSON para evitar múltiples variables de entorno.
+        // Solo se incluye el alias de Identity porque es la unica que no necesita autenticacion JWT 
+        // y puede beneficiarse del warm-up antes de la primera peticion real.
+        LAMBDA_ALIASES: JSON.stringify([
+          identityAlias.functionArn,
+        ]),
+      },
+    });
+
+    // Ruta pública en API Gateway — sin JWT Authorizer.
+    // LoginPage la llama antes de autenticarse, por lo que no hay token disponible.
+    api.addRoutes({
+      path: '/health/database',
+      methods: [apigatewayv2.HttpMethod.GET],
+      integration: new apigatewayv2integrations.HttpLambdaIntegration(
+        'RdsHealthIntegration',
+        healthLambda,
+      ),
+      // Sin authorizer: intencionadamente público
+    });
+
+    // ─── Lambda Scheduler — apagado por inactividad ───────────────────────────────
+    // Comprueba cada hora si RDS lleva INACTIVITY_HOURS horas sin conexiones activas.
+    // Si es así, la apaga para reducir costes una vez expirado el Free Tier de RDS.
+
+    const schedulerRole = new iam.Role(this, 'RdsSchedulerLambdaRole', {
+      assumedBy: new iam.ServicePrincipal('lambda.amazonaws.com'),
+      description: 'IAM Role para Lambda de apagado automatico de RDS por inactividad',
+      managedPolicies: [
+        iam.ManagedPolicy.fromAwsManagedPolicyName('service-role/AWSLambdaBasicExecutionRole'),
+      ],
+      inlinePolicies: {
+        RdsSchedulerPolicy: new iam.PolicyDocument({
+          statements: [
+            new iam.PolicyStatement({
+              effect: iam.Effect.ALLOW,
+              actions: ['rds:DescribeDBInstances', 'rds:StopDBInstance'],
+              resources: [
+                `arn:aws:rds:eu-west-1:${this.account}:db:${props.rdsInstanceId}`,
+              ],
+            }),
+            new iam.PolicyStatement({
+              effect: iam.Effect.ALLOW,
+              // GetMetricStatistics no soporta ARN de recurso especifico en IAM
+              actions: ['cloudwatch:GetMetricStatistics'],
+              resources: ['*'],
+            }),
+          ],
+        }),
+      },
+    });
+
+    const schedulerLambda = new lambda.Function(this, 'RdsSchedulerLambda', {
+      functionName: 'tfm-rds-scheduler',
+      description: 'Apaga RDS automaticamente tras 2 horas sin actividad',
+      runtime: lambda.Runtime.NODEJS_20_X,
+      handler: 'index.handler',
+      code: lambda.Code.fromAsset('./lambdas/rds-scheduler'),
+      role: schedulerRole,
+      memorySize: 128,
+      timeout: cdk.Duration.seconds(30),
+      environment: {
+        // Identificador de la instancia RDS para las llamadas a la API de RDS.
+        RDS_INSTANCE_ID: props.rdsInstanceId,
+        // Horas de inactividad requeridas antes de apagar RDS.
+        // Con HikariCP minimum-idle=1, las conexiones caen a 0 ~15 min
+        // despues de que los usuarios dejen de usar la app.
+        // 2 horas da margen suficiente para sesiones largas intermitentes.
+        INACTIVITY_HOURS: '2',
+      },
+    });
+
+    // EventBridge Rule: dispara el scheduler cada hora
+    const inactivityRule = new events.Rule(this, 'RdsInactivityRule', {
+      ruleName: 'tfm-rds-inactivity-check',
+      description: 'Comprueba cada hora si RDS lleva 2h sin actividad para apagarla',
+      schedule: events.Schedule.rate(cdk.Duration.hours(1)),
+    });
+
+    inactivityRule.addTarget(new targets.LambdaFunction(schedulerLambda));
 
 
     // ── Outputs ────────────────────────────────────────────────────────────
