@@ -7,7 +7,7 @@ import * as ssm from 'aws-cdk-lib/aws-ssm';
 import { Construct } from 'constructs';
 import * as events from 'aws-cdk-lib/aws-events';
 import * as targets from 'aws-cdk-lib/aws-events-targets';
-
+import * as s3 from 'aws-cdk-lib/aws-s3';
 
 /**
  * Props que TfmLambdaStack recibe de otros stacks.
@@ -651,6 +651,89 @@ export class TfmLambdaStack extends cdk.Stack {
     inactivityRule.addTarget(new targets.LambdaFunction(schedulerLambda));
 
 
+    // ── GitHub Actions — Rol de deploy para microservicios ────────────────────────
+
+    // Referencia al proveedor OIDC de GitHub creado en FrontendStack.
+    // fromOpenIdConnectProviderArn() no crea ningún recurso CloudFormation:
+    // solo obtiene una referencia de solo lectura al proveedor existente.
+    const githubOidcProvider = iam.OpenIdConnectProvider.fromOpenIdConnectProviderArn(
+      this,
+      'GithubOidcRef',
+      `arn:aws:iam::${this.account}:oidc-provider/token.actions.githubusercontent.com`
+    );
+
+    // Bucket S3 para artefactos de despliegue (JARs de Lambda).
+    // Lifecycle de 30 dias: no necesitamos historico de JARs mas alla de un mes.
+    // Nombre con account ID para garantizar unicidad global de S3.
+    const deploymentBucket = new s3.Bucket(this, 'DeploymentBucket', {
+      bucketName: `tfm-deployments-${this.account}`,
+      removalPolicy: cdk.RemovalPolicy.DESTROY,
+      autoDeleteObjects: true,
+      lifecycleRules: [{ expiration: cdk.Duration.days(30) }],
+    });
+
+    // Rol separado del frontend por principio de minimo privilegio:
+    // una brecha en el workflow del frontend no puede modificar codigo Lambda.
+    const backendDeployRole = new iam.Role(this, 'BackendDeployRole', {
+      roleName: 'tfm-github-actions-backend-deploy',
+      description: 'Rol asumido por GitHub Actions para desplegar microservicios en Lambda',
+      assumedBy: new iam.WebIdentityPrincipal(
+        githubOidcProvider.openIdConnectProviderArn,
+        {
+          StringEquals: {
+            'token.actions.githubusercontent.com:aud': 'sts.amazonaws.com',
+          },
+          StringLike: {
+            // Cubre todos los repositorios tfm-* del usuario
+            'token.actions.githubusercontent.com:sub': 'repo:blazquez-isma-uah/tfm-*:*',
+          },
+        }
+      ),
+    });
+
+    // Permiso: subir JARs al bucket de artefactos antes de actualizar Lambda.
+    backendDeployRole.addToPolicy(new iam.PolicyStatement({
+      effect: iam.Effect.ALLOW,
+      actions: ['s3:PutObject', 's3:GetObject', 's3:ListBucket'],
+      resources: [
+        deploymentBucket.bucketArn,
+        `${deploymentBucket.bucketArn}/*`,
+      ],
+    }));
+
+    // Permiso: actualizar codigo, publicar version y consultar estado de cada Lambda.
+    // GetFunction es necesario para los waiters de la CLI:
+    //   - wait function-updated-v2  (tras update-function-code)
+    //   - wait function-active-v2   (tras publish-version, espera al snapshot SnapStart)
+    backendDeployRole.addToPolicy(new iam.PolicyStatement({
+      effect: iam.Effect.ALLOW,
+      actions: [
+        'lambda:UpdateFunctionCode',
+        'lambda:PublishVersion',
+        'lambda:GetFunction',
+      ],
+      resources: [
+        `arn:aws:lambda:${this.region}:${this.account}:function:tfm-identity`,
+        `arn:aws:lambda:${this.region}:${this.account}:function:tfm-users`,
+        `arn:aws:lambda:${this.region}:${this.account}:function:tfm-events`,
+        `arn:aws:lambda:${this.region}:${this.account}:function:tfm-surveys`,
+      ],
+    }));
+
+    // Permiso: actualizar el alias 'live' para conmutar el trafico a la nueva version.
+    // IMPORTANTE: el ARN de un alias es distinto al de la funcion base (funcion:alias),
+    // por eso es un PolicyStatement separado con recursos diferentes.
+    backendDeployRole.addToPolicy(new iam.PolicyStatement({
+      effect: iam.Effect.ALLOW,
+      actions: ['lambda:UpdateAlias'],
+      resources: [
+        `arn:aws:lambda:${this.region}:${this.account}:function:tfm-identity:live`,
+        `arn:aws:lambda:${this.region}:${this.account}:function:tfm-users:live`,
+        `arn:aws:lambda:${this.region}:${this.account}:function:tfm-events:live`,
+        `arn:aws:lambda:${this.region}:${this.account}:function:tfm-surveys:live`,
+      ],
+    }));
+
     // ── Outputs ────────────────────────────────────────────────────────────
     new cdk.CfnOutput(this, 'ApiGatewayUrl', {
       value: api.apiEndpoint,
@@ -701,5 +784,15 @@ export class TfmLambdaStack extends cdk.Stack {
       value: surveysAlias.functionArn,
       description: 'ARN del alias live de Lambda MS Surveys - SnapStart activo',
     });
+
+    new cdk.CfnOutput(this, 'BackendDeployRoleArn', {
+      value: backendDeployRole.roleArn,
+      description: 'ARN del rol IAM para GitHub Actions deploy de microservicios',
+    });
+    
+    new cdk.CfnOutput(this, 'DeploymentBucketName', {
+      value: deploymentBucket.bucketName,
+      description: 'Bucket S3 para los JARs de despliegue',
+    });                 
   }
 }
