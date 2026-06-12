@@ -712,25 +712,31 @@ export class TfmLambdaStack extends cdk.Stack {
         'lambda:PublishVersion',
         'lambda:GetFunction',
       ],
+      // GetFunction necesita dos patrones de ARN:
+      //   - ARN base (function:tfm-xxx): para update-function-code y publish-version
+      //   - ARN con cualificador (function:tfm-xxx:*): para wait function-active-v2
+      //     --qualifier VERSION, que llama a GetFunction sobre el ARN versionado
       resources: [
         `arn:aws:lambda:${this.region}:${this.account}:function:tfm-identity`,
         `arn:aws:lambda:${this.region}:${this.account}:function:tfm-users`,
         `arn:aws:lambda:${this.region}:${this.account}:function:tfm-events`,
         `arn:aws:lambda:${this.region}:${this.account}:function:tfm-surveys`,
+        `arn:aws:lambda:${this.region}:${this.account}:function:tfm-identity:*`,
+        `arn:aws:lambda:${this.region}:${this.account}:function:tfm-users:*`,
+        `arn:aws:lambda:${this.region}:${this.account}:function:tfm-events:*`,
+        `arn:aws:lambda:${this.region}:${this.account}:function:tfm-surveys:*`,
       ],
     }));
 
-    // Permiso: actualizar el alias 'live' para conmutar el trafico a la nueva version.
-    // IMPORTANTE: el ARN de un alias es distinto al de la funcion base (funcion:alias),
-    // por eso es un PolicyStatement separado con recursos diferentes.
+    // UpdateAlias se evalua sobre el ARN base de la funcion, no sobre el ARN del alias.
     backendDeployRole.addToPolicy(new iam.PolicyStatement({
       effect: iam.Effect.ALLOW,
       actions: ['lambda:UpdateAlias'],
       resources: [
-        `arn:aws:lambda:${this.region}:${this.account}:function:tfm-identity:live`,
-        `arn:aws:lambda:${this.region}:${this.account}:function:tfm-users:live`,
-        `arn:aws:lambda:${this.region}:${this.account}:function:tfm-events:live`,
-        `arn:aws:lambda:${this.region}:${this.account}:function:tfm-surveys:live`,
+        `arn:aws:lambda:${this.region}:${this.account}:function:tfm-identity`,
+        `arn:aws:lambda:${this.region}:${this.account}:function:tfm-users`,
+        `arn:aws:lambda:${this.region}:${this.account}:function:tfm-events`,
+        `arn:aws:lambda:${this.region}:${this.account}:function:tfm-surveys`,
       ],
     }));
 
@@ -789,7 +795,7 @@ export class TfmLambdaStack extends cdk.Stack {
       value: backendDeployRole.roleArn,
       description: 'ARN del rol IAM para GitHub Actions deploy de microservicios',
     });
-    
+
     new cdk.CfnOutput(this, 'DeploymentBucketName', {
       value: deploymentBucket.bucketName,
       description: 'Bucket S3 para los JARs de despliegue',
