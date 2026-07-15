@@ -2,7 +2,7 @@
 services:
   users:
     volumes:
-      - "${USUARIOS_DIR}/target/app.jar:/app/app-local.jar:ro"
+      - "${USUARIOS_DIR}/target/app-local.jar:/app/app.jar:ro"
     # Opcional: logs más verbosos en dev
     # environment:
     #   LOGGING_LEVEL_ORG_SPRINGFRAMEWORK_SECURITY: DEBUG
@@ -10,21 +10,21 @@ services:
 
   events:
     volumes:
-      - "${EVENTS_DIR}/target/app.jar:/app/app-local.jar:ro"
+      - "${EVENTS_DIR}/target/app-local.jar:/app/app.jar:ro"
     # environment:
     #   LOGGING_LEVEL_ORG_SPRINGFRAMEWORK_SECURITY: DEBUG
     #   LOGGING_LEVEL_ORG_SPRINGFRAMEWORK_SECURITY_OAUTH2: DEBUG
 
   surveys:
     volumes:
-      - "${SURVEYS_DIR}/target/app.jar:/app/app-local.jar:ro"
+      - "${SURVEYS_DIR}/target/app-local.jar:/app/app.jar:ro"
     # Opcional: logs más detallados en desarrollo
     # environment:
     #   LOGGING_LEVEL_COM_TFM_BANDAS_SURVEYS: DEBUG
 
   identity:
     volumes:
-      - "${IDENTITY_DIR}/target/app.jar:/app/app-local.jar:ro"
+      - "${IDENTITY_DIR}/target/app-local.jar:/app/app.jar:ro"
     # Opcional: logs más detallados en desarrollo
     # environment:
     #   LOGGING_LEVEL_COM_TFM_BANDAS_IDENTITY: DEBUG
@@ -37,13 +37,14 @@ services:
     #   LOGGING_LEVEL_COM_TFM_BANDAS_GATEWAY: DEBUG
 
 
-# Como en el pom.xml de los proyectos se genera el JAR compilado en /target/app.jar y en el Dockerfile se copia a /app/app.jar, 
+# Como en el pom.xml de los proyectos se genera el JAR compilado en /target/app-local.jar y en el Dockerfile se copia a /app/app.jar, 
 # montamos ese JAR desde el host al contenedor para evitar tener que reconstruir la imagen en cada cambio.
 # Así, tras compilar con Maven en el host, basta con reiniciar el contenedor
+# El jar correcto a utilizar es el que se genera con el perfil "local" (app-local.jar), que incluye la configuración de Spring Boot para desarrollo local.
 
 
 # Proceso:
 # 1) Editar código en ../usuarios o ../eventos
 # 2) mvn -DskipTests package
-# 3) docker compose --profile users --profile events up -d --build
+# 3) docker compose up -d --build
 # 4) Probar en http://localhost:8081 (usuarios) o http://localhost:8083 (eventos)

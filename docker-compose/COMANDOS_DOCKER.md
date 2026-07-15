@@ -195,6 +195,8 @@ docker compose --env-file env/local.env up -d --build
 - MySQL principal: `localhost:3307`
 - MySQL Keycloak: `localhost:3308`
 
+Nota: esos puertos son los publicados en el host. Dentro de cada contenedor, las apps Java siguen escuchando en 8080.
+
 ---
 
 ## 10) Troubleshooting express
