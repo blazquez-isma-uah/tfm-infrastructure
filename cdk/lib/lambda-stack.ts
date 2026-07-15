@@ -8,6 +8,7 @@ import { Construct } from 'constructs';
 import * as events from 'aws-cdk-lib/aws-events';
 import * as targets from 'aws-cdk-lib/aws-events-targets';
 import * as s3 from 'aws-cdk-lib/aws-s3';
+import * as dynamodb from 'aws-cdk-lib/aws-dynamodb';
 
 /**
  * Props que TfmLambdaStack recibe de otros stacks.
@@ -63,6 +64,9 @@ export interface LambdaStackProps extends cdk.StackProps {
 
   /** Identificador de la instancia RDS. Usado por las Lambdas de scheduler y health check. */
   rdsInstanceId: string;
+
+  /** Path al directorio raiz de MS Scores. */
+  scoresServicePath: string;
 }
 
 export class TfmLambdaStack extends cdk.Stack {
@@ -650,6 +654,121 @@ export class TfmLambdaStack extends cdk.Stack {
 
     inactivityRule.addTarget(new targets.LambdaFunction(schedulerLambda));
 
+    // ── MS Scores — DynamoDB + S3 + Lambda ───────────────────────────────────────
+    // Tabla DynamoDB con single-table design.
+    // PK=EVENT#{eventId} permite recuperar todas las partituras de un evento con una sola Query, sin scan.
+    const scoresTable = new dynamodb.Table(this, 'ScoresTable', {
+      tableName: 'tfm-scores',
+      partitionKey: { name: 'PK', type: dynamodb.AttributeType.STRING },
+      sortKey: { name: 'SK', type: dynamodb.AttributeType.STRING },
+      billingMode: dynamodb.BillingMode.PAY_PER_REQUEST,
+      removalPolicy: cdk.RemovalPolicy.RETAIN,
+    });
+
+    // GSI para listar todas las partituras de un instrumento concreto.
+    // PK del GSI: instrumentName. SK del GSI: EVENT#{eventId}.
+    scoresTable.addGlobalSecondaryIndex({
+      indexName: 'GSI1-instrument',
+      partitionKey: { name: 'instrumentName', type: dynamodb.AttributeType.STRING },
+      sortKey: { name: 'PK', type: dynamodb.AttributeType.STRING },
+      projectionType: dynamodb.ProjectionType.ALL,
+    });
+
+    // Bucket S3 para los ficheros PDF.
+    // El acceso siempre es via presigned URLs: el bucket nunca es publico.
+    // RETAIN para no perder partituras si se destruye el stack accidentalmente.
+    const scoresBucket = new s3.Bucket(this, 'ScoresBucket', {
+      bucketName: `tfm-scores-${this.account}`,
+      removalPolicy: cdk.RemovalPolicy.RETAIN,
+      blockPublicAccess: s3.BlockPublicAccess.BLOCK_ALL,
+      versioned: true,
+    });
+
+    // IAM Role para la Lambda de MS Scores.
+    const scoresRole = new iam.Role(this, 'ScoresLambdaRole', {
+      assumedBy: new iam.ServicePrincipal('lambda.amazonaws.com'),
+      managedPolicies: [
+        iam.ManagedPolicy.fromAwsManagedPolicyName('service-role/AWSLambdaBasicExecutionRole'),
+      ],
+    });
+
+    // Permisos DynamoDB: solo las operaciones necesarias, sobre la tabla y el GSI.
+    scoresRole.addToPolicy(new iam.PolicyStatement({
+      effect: iam.Effect.ALLOW,
+      actions: [
+        'dynamodb:PutItem',
+        'dynamodb:GetItem',
+        'dynamodb:DeleteItem',
+        'dynamodb:Query',
+      ],
+      resources: [
+        scoresTable.tableArn,
+        `${scoresTable.tableArn}/index/GSI1-instrument`,
+      ],
+    }));
+
+    // Permisos S3: leer, escribir y borrar PDFs + generar presigned URLs.
+    // s3:GetObject es necesario para que S3Presigner pueda firmar la URL de descarga.
+    scoresRole.addToPolicy(new iam.PolicyStatement({
+      effect: iam.Effect.ALLOW,
+      actions: [
+        's3:PutObject',
+        's3:GetObject',
+        's3:DeleteObject',
+      ],
+      resources: [`${scoresBucket.bucketArn}/*`],
+    }));
+
+    // Lambda MS Scores.
+    // Sin BD: no necesita DB_URL ni HikariCP.
+    // Sin Feign: no necesita IDENTITY_SERVICE_URI ni timeouts de inter-servicio.
+    const scoresLambda = new lambda.Function(this, 'ScoresLambda', {
+      functionName: 'tfm-scores',
+      runtime:      lambda.Runtime.JAVA_21,
+      handler:      'com.amazonaws.serverless.proxy.spring.SpringDelegatingLambdaContainerHandler::handleRequest',
+      code:         lambda.Code.fromAsset(props.scoresServicePath + '/target/app.jar'),
+      role:         scoresRole,
+      memorySize:   1024,
+      timeout:      cdk.Duration.seconds(45),
+      environment: {
+        SPRING_PROFILES_ACTIVE: 'aws',
+        MAIN_CLASS:             'com.tfm.bandas.scores.ScoresApplication',
+        COGNITO_JWKS_URI:       props.cognitoJwksUri,
+        COGNITO_ISSUER_URI:     props.cognitoIssuerUri,
+        SCORES_TABLE_NAME:      scoresTable.tableName,
+        SCORES_BUCKET_NAME:     scoresBucket.bucketName,
+      },
+    });
+
+    // SnapStart via escape hatch (no hay API nativa en CDK).
+    const cfnScores = scoresLambda.node.defaultChild as lambda.CfnFunction;
+    cfnScores.snapStart = { applyOn: 'PublishedVersions' };
+
+    // Alias live — SnapStart solo aplica a versiones publicadas.
+    const scoresAlias = new lambda.Alias(this, 'ScoresAlias', {
+      aliasName: 'live',
+      version:   scoresLambda.currentVersion,
+    });
+
+    // Integración con API Gateway.
+    const scoresIntegration = new apigatewayv2integrations.HttpLambdaIntegration(
+      'ScoresIntegration',
+      scoresAlias,
+    );
+
+    // Rutas en API Gateway — ruta base + proxy para todos los subpaths.
+    api.addRoutes({
+      path:        '/api/scores',
+      methods:     [apigatewayv2.HttpMethod.ANY],
+      integration: scoresIntegration,
+      authorizer:  jwtAuth,
+    });
+    api.addRoutes({
+      path:        '/api/scores/{proxy+}',
+      methods:     [apigatewayv2.HttpMethod.ANY],
+      integration: scoresIntegration,
+      authorizer:  jwtAuth,
+    });
 
     // ── GitHub Actions — Rol de deploy para microservicios ────────────────────────
 
@@ -737,6 +856,28 @@ export class TfmLambdaStack extends cdk.Stack {
         `arn:aws:lambda:${this.region}:${this.account}:function:tfm-users`,
         `arn:aws:lambda:${this.region}:${this.account}:function:tfm-events`,
         `arn:aws:lambda:${this.region}:${this.account}:function:tfm-surveys`,
+      ],
+    }));
+
+    // Añadir tfm-scores al rol de deploy de GitHub Actions.
+    // Mismo patron que los otros MS: GetFunction sobre ARN base y versionado.
+    backendDeployRole.addToPolicy(new iam.PolicyStatement({
+      effect: iam.Effect.ALLOW,
+      actions: [
+        'lambda:UpdateFunctionCode',
+        'lambda:PublishVersion',
+        'lambda:GetFunction',
+      ],
+      resources: [
+        `arn:aws:lambda:${this.region}:${this.account}:function:tfm-scores`,
+        `arn:aws:lambda:${this.region}:${this.account}:function:tfm-scores:*`,
+      ],
+    }));
+    backendDeployRole.addToPolicy(new iam.PolicyStatement({
+      effect: iam.Effect.ALLOW,
+      actions: ['lambda:UpdateAlias'],
+      resources: [
+        `arn:aws:lambda:${this.region}:${this.account}:function:tfm-scores`,
       ],
     }));
 

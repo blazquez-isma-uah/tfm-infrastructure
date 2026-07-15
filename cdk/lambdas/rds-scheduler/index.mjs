@@ -54,10 +54,14 @@ export const handler = async () => {
     Statistics: ['Maximum'],
   }));
 
-  const maxConnections = Math.max(
-    0,
-    ...metrics.Datapoints.map(dp => dp.Maximum ?? 0)
-  );
+  // Distingue entre "no datapoints" (posible lag de ingesta o arranque reciente) y "0 datapoints" (sin actividad). 
+  // Solo apaga RDS si hay datapoints y todos son 0.
+  if (metrics.Datapoints.length === 0) {
+    console.log('Sin datapoints de CloudWatch todavia (posible lag de ingesta o arranque reciente). Sin accion, por seguridad.');
+    return;
+  }
+  
+  const maxConnections = Math.max(...metrics.Datapoints.map(dp => dp.Maximum ?? 0));
 
   console.log(`Max connections in last ${INACTIVITY_HOURS}h: ${maxConnections}`);
 
