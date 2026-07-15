@@ -5,8 +5,6 @@ import * as lambda from 'aws-cdk-lib/aws-lambda';
 import * as iam from 'aws-cdk-lib/aws-iam';
 import * as ssm from 'aws-cdk-lib/aws-ssm';
 import { Construct } from 'constructs';
-import * as events from 'aws-cdk-lib/aws-events';
-import * as targets from 'aws-cdk-lib/aws-events-targets';
 import * as s3 from 'aws-cdk-lib/aws-s3';
 
 /**
@@ -80,6 +78,41 @@ export class TfmLambdaStack extends cdk.Stack {
 
   constructor(scope: Construct, id: string, props: LambdaStackProps) {
     super(scope, id, props);
+
+    // ─── Estrategia de código para las Lambdas ────────────────────────────────────
+    // Por defecto, CDK lee el código de cada Lambda desde S3 (tfm-deployments-ACCOUNT).
+    // El pipeline de GitHub Actions es el responsable de compilar y subir el JAR a S3
+    // en cada push a main. Esto desacopla los despliegues de infraestructura (CDK) de
+    // los despliegues de código (CI/CD), que es la separación de responsabilidades correcta.
+    //
+    // Para desarrollo rápido sin necesidad de commit, se puede usar el JAR local:
+    //   cdk deploy TfmLambdaStack --context useLocalJar=true
+    //
+    // Esto es útil para probar cambios puntuales en local antes de subirlos a main.
+    // En producción y en CI siempre se omite el contexto (usa S3 por defecto).
+    const useLocalJar = this.node.tryGetContext('useLocalJar') === 'true';
+
+    // Referencia al bucket de despliegue. Se usa fromBucketName (no new Bucket)
+    // porque el bucket se define más abajo en este mismo stack: fromBucketName
+    // crea solo una referencia lógica sin crear ningún recurso CloudFormation adicional.
+    const deployBucket = s3.Bucket.fromBucketName(
+      this,
+      'DeployBucketRef',
+      `tfm-deployments-${this.account}`
+    );
+
+    // Helper: devuelve el código correcto según la estrategia activa.
+    // Centraliza la lógica para que cada Lambda no tenga que repetirla.
+    // Nota sobre el warning @aws-cdk/aws-lambda:codeFromBucketObjectVersionNotSpecified:
+    // CDK avisa de que no rastreará cambios en el objeto S3. Este comportamiento es
+    // INTENCIONADO: los cambios de código los gestiona el pipeline de GitHub Actions
+    // via aws lambda update-function-code, no CDK. CDK solo gestiona infraestructura.
+    // La separación de responsabilidades es deliberada.
+    const lambdaCode = (localPath: string, s3Key: string): lambda.Code =>
+      useLocalJar
+        ? lambda.Code.fromAsset(localPath + '/target/app.jar')
+        : lambda.Code.fromBucket(deployBucket, s3Key);
+
 
     // ─── API Gateway HTTP API ───────────────────────────────────────────────────────────────
     // HTTP API (apigatewayv2) en lugar de REST API (apigateway) por tres razones:
@@ -193,8 +226,8 @@ export class TfmLambdaStack extends cdk.Stack {
       // AwsSpringHttpProcessingUtils. La clase principal de Spring Boot se
       // indica con la variable de entorno MAIN_CLASS.
       handler: 'com.amazonaws.serverless.proxy.spring.SpringDelegatingLambdaContainerHandler::handleRequest',
-      // El código de la Lambda se empaqueta como un JAR ejecutable (con todas las dependencias incluidas) usando el plugin maven-shade.
-      code: lambda.Code.fromAsset(props.identityServicePath + '/target/app.jar'),
+      // El código de la Lambda se empaqueta en un JAR/ZIP con maven-shade y se sube a S3.
+      code: lambdaCode(props.identityServicePath, 'tfm-identity/app.jar'),
       role: identityRole,
       // 1024MB de memoria para mejorar el rendimiento de arranque de Spring Boot.
       memorySize: 1024,
@@ -283,7 +316,8 @@ export class TfmLambdaStack extends cdk.Stack {
       description: 'MS Users - Gestion de perfiles, instrumentos y roles.',
       runtime: lambda.Runtime.JAVA_21,
       handler: 'com.amazonaws.serverless.proxy.spring.SpringDelegatingLambdaContainerHandler::handleRequest',
-      code: lambda.Code.fromAsset(props.usersServicePath + '/target/app.jar'),
+      // El código de la Lambda se empaqueta en un JAR/ZIP con maven-shade y se sube a S3.
+      code: lambdaCode(props.usersServicePath, 'tfm-users/app.jar'),
       role: usersRole,
       memorySize: 1024,
       // 45s: con el cold start de MS Identity + el tiempo de procesamiento + overhead de red, 30s puede ser justo para las llamadas Feign.
@@ -392,7 +426,8 @@ export class TfmLambdaStack extends cdk.Stack {
       functionName: 'tfm-events',
       runtime: lambda.Runtime.JAVA_21,
       handler: 'com.amazonaws.serverless.proxy.spring.SpringDelegatingLambdaContainerHandler::handleRequest',
-      code: lambda.Code.fromAsset(props.eventsServicePath + '/target/app.jar'),
+      // El código de la Lambda se empaqueta en un JAR/ZIP con maven-shade y se sube a S3.
+      code: lambdaCode(props.eventsServicePath, 'tfm-events/app.jar'),
       role: eventsRole,
       memorySize: 1024,
       timeout: cdk.Duration.seconds(45),
@@ -464,7 +499,8 @@ export class TfmLambdaStack extends cdk.Stack {
       functionName: 'tfm-surveys',
       runtime: lambda.Runtime.JAVA_21,
       handler: 'com.amazonaws.serverless.proxy.spring.SpringDelegatingLambdaContainerHandler::handleRequest',
-      code: lambda.Code.fromAsset(props.surveysServicePath + '/target/app.jar'),
+      // El código de la Lambda se empaqueta en un JAR/ZIP con maven-shade y se sube a S3.
+      code: lambdaCode(props.surveysServicePath, 'tfm-surveys/app.jar'),
       role: surveysRole,
       memorySize: 1024,
       timeout: cdk.Duration.seconds(45),
@@ -598,13 +634,18 @@ export class TfmLambdaStack extends cdk.Stack {
     );
 
     // Bucket S3 para artefactos de despliegue (JARs de Lambda).
-    // Lifecycle de 30 dias: no necesitamos historico de JARs mas alla de un mes.
     // Nombre con account ID para garantizar unicidad global de S3.
+    // El JAR en S3 no es un backup ni un archivo histórico - es simplemente el código actualmente desplegado en producción
+    // Siempre se sube un nuevo JAR a S3 antes de actualizar el microservicio (PR mergeado en main) y se borra el JAR anterior.
+    // No se borran los jar actuales de los jar porque debe existir para hacer deploy de la Lambda.
     const deploymentBucket = new s3.Bucket(this, 'DeploymentBucket', {
       bucketName: `tfm-deployments-${this.account}`,
       removalPolicy: cdk.RemovalPolicy.DESTROY,
       autoDeleteObjects: true,
-      lifecycleRules: [{ expiration: cdk.Duration.days(30) }],
+      // Sin lifecycleRules: cada microservicio mantiene un único JAR con clave fija
+      // (tfm-users/app.jar, tfm-events/app.jar, etc.). El coste de ~320 MB es
+      // ~$0.007/mes, insignificante. Borrar el JAR haría fallar cdk deploy al
+      // intentar referenciar un objeto inexistente en S3.
     });
 
     // Rol separado del frontend por principio de minimo privilegio:
