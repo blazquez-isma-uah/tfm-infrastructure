@@ -43,9 +43,8 @@ const lambdaStack = new TfmLambdaStack(app, 'TfmLambdaStack', {
   surveysServiceDeleteByEventIdPath: '/api/surveys/event/',
   surveysServicePath: '../../surveys',
   eventsServiceExistsPath: '/api/events/{eventId}',
-  // Identificador de la instancia RDS para las Lambdas de scheduler y health check.
-  // Cross-stack reference: TfmDatabaseStack exporta el valor, TfmLambdaStack lo importa.
-  rdsInstanceId: databaseStack.dbInstanceIdentifier,
+  // Endpoint de la base de datos Aurora MySQL, para que las Lambdas puedan conectarse a ella.
+  auroraEndpoint: databaseStack.dbEndpoint,
 });
 
 // FrontendStack recibe el endpoint del API Gateway via cross-stack reference.
