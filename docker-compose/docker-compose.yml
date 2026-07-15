@@ -82,6 +82,7 @@ services:
       keycloak: { condition: service_started }
     environment:
       SPRING_PROFILES_ACTIVE: docker
+      MANAGEMENT_PORT: 8081
       DB_HOST: mysql
       DB_PORT: 3306
       DB_NAME: ${USERS_DB}
@@ -109,6 +110,7 @@ services:
       keycloak: { condition: service_started }
     environment:
       SPRING_PROFILES_ACTIVE: docker
+      MANAGEMENT_PORT: 8081
       DB_HOST: mysql
       DB_PORT: 3306
       DB_NAME: ${EVENTS_DB}
@@ -141,6 +143,7 @@ services:
       keycloak: { condition: service_started }
     environment:
       SPRING_PROFILES_ACTIVE: docker
+      MANAGEMENT_PORT: 8081
       DB_HOST: mysql
       DB_PORT: 3306
       DB_NAME: ${SURVEYS_DB}
@@ -168,6 +171,7 @@ services:
       keycloak: { condition: service_started }
     environment:
       SPRING_PROFILES_ACTIVE: docker
+      MANAGEMENT_PORT: 8081
       SPRING_SECURITY_OAUTH2_RESOURCESERVER_JWT_JWK_SET_URI: ${KC_JWKS}
       KEYCLOAK_AUTH_URL: ${KC_URL_INTERNAL}
       KEYCLOAK_REALM: ${KC_REALM}
@@ -196,8 +200,11 @@ services:
       keycloak: { condition: service_started }
       users: { condition: service_healthy }
       events:  { condition: service_healthy }
+      surveys: { condition: service_healthy }
+      identity: { condition: service_healthy }
     environment:
       SPRING_PROFILES_ACTIVE: docker
+      MANAGEMENT_PORT: 8081
       SPRING_SECURITY_OAUTH2_RESOURCESERVER_JWT_JWK_SET_URI: ${KC_JWKS}
       GATEWAY_USERS_URI: ${GATEWAY_USERS_URI}
       GATEWAY_EVENTS_URI: ${GATEWAY_EVENTS_URI}

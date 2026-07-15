@@ -17,7 +17,7 @@ const authStack = new AuthStack(app, 'TfmAuthStack', {
   description: 'TFM Bandas de Musica - Autenticacion con Amazon Cognito',
 });
 
-new DatabaseStack(app, 'TfmDatabaseStack', {
+const databaseStack = new DatabaseStack(app, 'TfmDatabaseStack', {
   env,
   description: 'TFM Bandas de Musica - Base de datos MySQL en RDS con SSL',
 });
@@ -43,6 +43,9 @@ const lambdaStack = new TfmLambdaStack(app, 'TfmLambdaStack', {
   surveysServiceDeleteByEventIdPath: '/api/surveys/event/',
   surveysServicePath: '../../surveys',
   eventsServiceExistsPath: '/api/events/{eventId}',
+  // Identificador de la instancia RDS para las Lambdas de scheduler y health check.
+  // Cross-stack reference: TfmDatabaseStack exporta el valor, TfmLambdaStack lo importa.
+  rdsInstanceId: databaseStack.dbInstanceIdentifier,
 });
 
 // FrontendStack recibe el endpoint del API Gateway via cross-stack reference.
