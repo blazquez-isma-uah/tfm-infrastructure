@@ -61,8 +61,8 @@ export interface LambdaStackProps extends cdk.StackProps {
   /** Path de API que MS Surveys usa para llamar a MS Events y validar existencia de evento. */
   eventsServiceExistsPath: string;
 
-  /** Identificador de la instancia RDS. Usado por las Lambdas de scheduler y health check. */
-  rdsInstanceId: string;
+  /** Endpoint del cluster Aurora. Usado por tfm-rds-health para comprobar disponibilidad via TCP. */
+  auroraEndpoint: string;
 }
 
 export class TfmLambdaStack extends cdk.Stack {
@@ -297,14 +297,15 @@ export class TfmLambdaStack extends cdk.Stack {
         IDENTITY_SERVICE_URI: this.apiUrl,
         // Credenciales de BD resueltas desde SSM Parameter Store por CloudFormation en deploy.
         // El valor real nunca aparece en el template de CloudFormation ni en los logs de CDK.
-        DB_URL: ssm.StringParameter.valueForStringParameter(this, '/tfm/db/url/users'),
-        DB_USERNAME: ssm.StringParameter.valueForStringParameter(this, '/tfm/db/username'),
+        // valueFromLookup resuelve el valor en tiempo de deploy y detecta cambios en el valor de SSM para redeployar la Lambda si cambia
+        DB_URL: ssm.StringParameter.valueFromLookup(this, '/tfm/db/url/users'),
+        DB_USERNAME: ssm.StringParameter.valueFromLookup(this, '/tfm/db/username'),
         // DB_PASSWORD se lee de SSM como String (no SecureString) por decision documentada.
         // CloudFormation no puede resolver {{resolve:ssm-secure:...}} en variables de entorno de Lambda. 
         // Lambda cifra las variables de entorno at rest con KMS por defecto, lo que da un nivel de proteccion equivalente.
         // La alternativa de Secrets Manager (SecretValue.secretsManager) introduciria
         // una dependencia adicional sin beneficio de seguridad real en este contexto.
-        DB_PASSWORD: ssm.StringParameter.valueForStringParameter(this, '/tfm/db/password'),
+        DB_PASSWORD: ssm.StringParameter.valueFromLookup(this, '/tfm/db/password'),
       },
     });
 
@@ -402,14 +403,14 @@ export class TfmLambdaStack extends cdk.Stack {
         COGNITO_ISSUER_URI: props.cognitoIssuerUri,
         SURVEYS_SERVICE_URI: this.apiUrl,
         SURVEYS_SERVICE_DELETE_BY_EVENT_ID_PATH: props.surveysServiceDeleteByEventIdPath,
-        DB_URL: ssm.StringParameter.valueForStringParameter(this, '/tfm/db/url/events'),
-        DB_USERNAME: ssm.StringParameter.valueForStringParameter(this, '/tfm/db/username'),
+        DB_URL: ssm.StringParameter.valueFromLookup(this, '/tfm/db/url/events'),
+        DB_USERNAME: ssm.StringParameter.valueFromLookup(this, '/tfm/db/username'),
         // DB_PASSWORD se lee de SSM como String (no SecureString) por decision documentada.
         // CloudFormation no puede resolver {{resolve:ssm-secure:...}} en variables de entorno de Lambda. 
         // Lambda cifra las variables de entorno at rest con KMS por defecto, lo que da un nivel de proteccion equivalente.
         // La alternativa de Secrets Manager (SecretValue.secretsManager) introduciria
         // una dependencia adicional sin beneficio de seguridad real en este contexto.
-        DB_PASSWORD: ssm.StringParameter.valueForStringParameter(this, '/tfm/db/password'),
+        DB_PASSWORD: ssm.StringParameter.valueFromLookup(this, '/tfm/db/password'),
       },
     });
 
@@ -477,9 +478,9 @@ export class TfmLambdaStack extends cdk.Stack {
         // Feign construye la URL completa: EVENTS_SERVICE_URI + EVENTS_SERVICE_EXISTS_PATH + {eventId}
         EVENTS_SERVICE_URI: this.apiUrl,
         EVENTS_SERVICE_EXISTS_PATH: props.eventsServiceExistsPath,
-        DB_URL: ssm.StringParameter.valueForStringParameter(this, '/tfm/db/url/surveys'),
-        DB_USERNAME: ssm.StringParameter.valueForStringParameter(this, '/tfm/db/username'),
-        DB_PASSWORD: ssm.StringParameter.valueForStringParameter(this, '/tfm/db/password'),
+        DB_URL: ssm.StringParameter.valueFromLookup(this, '/tfm/db/url/surveys'),
+        DB_USERNAME: ssm.StringParameter.valueFromLookup(this, '/tfm/db/username'),
+        DB_PASSWORD: ssm.StringParameter.valueFromLookup(this, '/tfm/db/password'),
       },
     });
 
@@ -533,22 +534,12 @@ export class TfmLambdaStack extends cdk.Stack {
           statements: [
             new iam.PolicyStatement({
               effect: iam.Effect.ALLOW,
-              // DescribeDBInstances: leer el estado actual de RDS
-              // StartDBInstance: arrancar RDS cuando está parada
-              actions: ['rds:DescribeDBInstances', 'rds:StartDBInstance'],
-              resources: [
-                `arn:aws:rds:eu-west-1:${this.account}:db:${props.rdsInstanceId}`,
-              ],
-            }),
-            new iam.PolicyStatement({
-              effect: iam.Effect.ALLOW,
-              // InvokeFunction: invocar las 4 Lambdas de negocio para warm-up
+              // InvokeFunction: invocar Lambda de Identity para warm-up
+              // Aurora no necesita permisos IAM: se reanuda automáticamente
+              // al recibir la primera conexión TCP, sin StartDBInstance.
               actions: ['lambda:InvokeFunction'],
               resources: [
                 identityAlias.functionArn,
-                usersAlias.functionArn,
-                eventsAlias.functionArn,
-                surveysAlias.functionArn,
               ],
             }),
           ],
@@ -566,14 +557,19 @@ export class TfmLambdaStack extends cdk.Stack {
       memorySize: 256,
       timeout: cdk.Duration.seconds(10),
       environment: {
-        // Identificador de la instancia RDS para las llamadas a la API de RDS.
-        RDS_INSTANCE_ID: props.rdsInstanceId,
+        // Endpoint del cluster Aurora para comprobar disponibilidad via TCP antes del login.
+        // Aurora no requiere StartDBInstance — se reanuda sola al recibir la primera conexión.
+        AURORA_ENDPOINT: props.auroraEndpoint,
+        AURORA_PORT: '3306',
         // ARNs de los alias live de las Lambdas de negocio para warm-up.
         // Se pasan como JSON para evitar múltiples variables de entorno.
         // Solo se incluye el alias de Identity porque es la unica que no necesita autenticacion JWT 
         // y puede beneficiarse del warm-up antes de la primera peticion real.
         LAMBDA_ALIASES: JSON.stringify([
           identityAlias.functionArn,
+          usersAlias.functionArn,
+          eventsAlias.functionArn,
+          surveysAlias.functionArn,
         ]),
       },
     });
@@ -589,67 +585,6 @@ export class TfmLambdaStack extends cdk.Stack {
       ),
       // Sin authorizer: intencionadamente público
     });
-
-    // ─── Lambda Scheduler — apagado por inactividad ───────────────────────────────
-    // Comprueba cada hora si RDS lleva INACTIVITY_HOURS horas sin conexiones activas.
-    // Si es así, la apaga para reducir costes una vez expirado el Free Tier de RDS.
-
-    const schedulerRole = new iam.Role(this, 'RdsSchedulerLambdaRole', {
-      assumedBy: new iam.ServicePrincipal('lambda.amazonaws.com'),
-      description: 'IAM Role para Lambda de apagado automatico de RDS por inactividad',
-      managedPolicies: [
-        iam.ManagedPolicy.fromAwsManagedPolicyName('service-role/AWSLambdaBasicExecutionRole'),
-      ],
-      inlinePolicies: {
-        RdsSchedulerPolicy: new iam.PolicyDocument({
-          statements: [
-            new iam.PolicyStatement({
-              effect: iam.Effect.ALLOW,
-              actions: ['rds:DescribeDBInstances', 'rds:StopDBInstance'],
-              resources: [
-                `arn:aws:rds:eu-west-1:${this.account}:db:${props.rdsInstanceId}`,
-              ],
-            }),
-            new iam.PolicyStatement({
-              effect: iam.Effect.ALLOW,
-              // GetMetricStatistics no soporta ARN de recurso especifico en IAM
-              actions: ['cloudwatch:GetMetricStatistics'],
-              resources: ['*'],
-            }),
-          ],
-        }),
-      },
-    });
-
-    const schedulerLambda = new lambda.Function(this, 'RdsSchedulerLambda', {
-      functionName: 'tfm-rds-scheduler',
-      description: 'Apaga RDS automaticamente tras 2 horas sin actividad',
-      runtime: lambda.Runtime.NODEJS_20_X,
-      handler: 'index.handler',
-      code: lambda.Code.fromAsset('./lambdas/rds-scheduler'),
-      role: schedulerRole,
-      memorySize: 128,
-      timeout: cdk.Duration.seconds(30),
-      environment: {
-        // Identificador de la instancia RDS para las llamadas a la API de RDS.
-        RDS_INSTANCE_ID: props.rdsInstanceId,
-        // Horas de inactividad requeridas antes de apagar RDS.
-        // Con HikariCP minimum-idle=1, las conexiones caen a 0 ~15 min
-        // despues de que los usuarios dejen de usar la app.
-        // 2 horas da margen suficiente para sesiones largas intermitentes.
-        INACTIVITY_HOURS: '2',
-      },
-    });
-
-    // EventBridge Rule: dispara el scheduler cada hora
-    const inactivityRule = new events.Rule(this, 'RdsInactivityRule', {
-      ruleName: 'tfm-rds-inactivity-check',
-      description: 'Comprueba cada hora si RDS lleva 2h sin actividad para apagarla',
-      schedule: events.Schedule.rate(cdk.Duration.hours(1)),
-    });
-
-    inactivityRule.addTarget(new targets.LambdaFunction(schedulerLambda));
-
 
     // ── GitHub Actions — Rol de deploy para microservicios ────────────────────────
 

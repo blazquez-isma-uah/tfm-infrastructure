@@ -30,5 +30,10 @@
         ]
       }
     ]
-  }
+  },
+  "ssm:account=229502948023:parameterName=/tfm/db/url/users:region=eu-west-1": "jdbc:mysql://tfmdatabasestack-tfmdatabase73cc6270-h0uf4lwb5af1.cluster-cjykg20siwhg.eu-west-1.rds.amazonaws.com:3306/tfm_users?useSSL=true&requireSSL=true",
+  "ssm:account=229502948023:parameterName=/tfm/db/username:region=eu-west-1": "tfm_admin",
+  "ssm:account=229502948023:parameterName=/tfm/db/password:region=eu-west-1": "6LW4=Me^q9=Fo8Qi-Vr.cDboJQt6Wp",
+  "ssm:account=229502948023:parameterName=/tfm/db/url/events:region=eu-west-1": "jdbc:mysql://tfmdatabasestack-tfmdatabase73cc6270-h0uf4lwb5af1.cluster-cjykg20siwhg.eu-west-1.rds.amazonaws.com:3306/tfm_events?useSSL=true&requireSSL=true",
+  "ssm:account=229502948023:parameterName=/tfm/db/url/surveys:region=eu-west-1": "jdbc:mysql://tfmdatabasestack-tfmdatabase73cc6270-h0uf4lwb5af1.cluster-cjykg20siwhg.eu-west-1.rds.amazonaws.com:3306/tfm_surveys?useSSL=true&requireSSL=true"
 }

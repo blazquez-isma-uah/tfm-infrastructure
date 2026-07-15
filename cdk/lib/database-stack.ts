@@ -6,92 +6,112 @@ import { Construct } from 'constructs';
 
 export class DatabaseStack extends cdk.Stack {
 
-  // Exponemos el endpoint para que LambdaStack pueda construir las URLs de conexión
+  // Exponemos el endpoint del cluster para que LambdaStack construya las URLs de conexión.
+  // Se expone dbClusterIdentifier
+  // Aurora no requiere arranque manual — se reanuda automáticamente al recibir la primera conexión
   public readonly dbEndpoint: string;
   public readonly dbPort: string;
-  public readonly dbInstanceIdentifier: string;
+  public readonly dbClusterIdentifier: string;
 
   constructor(scope: Construct, id: string, props?: cdk.StackProps) {
     super(scope, id, props);
 
     // ── 1. Security Group ─────────────────────────────────────────────────
-    // Sin VPC, RDS es publicly accessible. El security group abre el puerto 3306 a 0.0.0.0/0 porque Lambda no tiene IP fija.
-    // La proteccion real es SSL obligatorio (Parameter Group) + credenciales en SSM
+    // Sin VPC propia: usamos la VPC por defecto de la cuenta AWS.
+    // La protección real es SSL obligatorio (Parameter Group) + credenciales en Secrets Manager.
     const dbSecurityGroup = new ec2.SecurityGroup(this, 'DbSecurityGroup', {
-      // Sin VPC propia usamos la VPC por defecto de la cuenta AWS.
-      // Esta VPC existe en todas las cuentas y no tiene coste.
       vpc: ec2.Vpc.fromLookup(this, 'DefaultVpc', { isDefault: true }),
-      securityGroupName: 'tfm-rds-sg',
-      description: 'TFM Bandas - RDS MySQL acceso publico con SSL obligatorio',
-      allowAllOutbound: false, // RDS no necesita trafico saliente
+      securityGroupName: 'tfm-aurora-sg',
+      description: 'TFM Bandas - Aurora MySQL acceso publico con SSL obligatorio',
+      allowAllOutbound: false,
     });
 
     // Puerto 3306 abierto a cualquier IP - la seguridad se garantiza por SSL obligatorio y credenciales en SSM
     dbSecurityGroup.addIngressRule(
       ec2.Peer.anyIpv4(),
       ec2.Port.tcp(3306),
-      'MySQL publico - proteccion por SSL obligatorio en Parameter Group'
+      'Aurora/MySQL publico - proteccion por SSL obligatorio en Parameter Group'
     );
 
-    // ── 2. Parameter Group - SSL obligatorio ──────────────────────────────
-    // require_secure_transport=ON fuerza SSL a nivel de motor MySQL.
-    // Cualquier cliente que intente conectar sin SSL recibe un error de conexion.
-    // Este parametro es el equivalente MySQL de "ssl-mode=REQUIRED" en el cliente.
-    const dbParameterGroup = new rds.ParameterGroup(this, 'DbParameterGroup', {
-      engine: rds.DatabaseInstanceEngine.mysql({
-        version: rds.MysqlEngineVersion.VER_8_0,
+    // ── 2. Cluster Parameter Group - SSL obligatorio ──────────────────────
+    // En Aurora se usa un ParameterGroup a nivel de CLUSTER (no de instancia).
+    // require_secure_transport tiene alcance GLOBAL en Aurora MySQL, por lo que
+    // se configura aquí y se aplica a todas las instancias del cluster.
+    //
+    // NOTA: Si VER_3_08_0 no compila con tu versión de CDK, usar:
+    //   rds.AuroraMysqlEngineVersion.of('8.0.mysql_aurora.3.08.0')
+    const clusterParameterGroup = new rds.ParameterGroup(this, 'ClusterParameterGroup', {
+      engine: rds.DatabaseClusterEngine.auroraMysql({
+        version: rds.AuroraMysqlEngineVersion.VER_3_08_0,
       }),
-      description: 'TFM Bandas - MySQL 8.0 con SSL obligatorio',
+      description: 'TFM Bandas - Aurora MySQL 3.08 con SSL obligatorio',
       parameters: {
         require_secure_transport: 'ON',
       },
     });
 
-    // ── 3. RDS MySQL db.t3.micro ──────────────────────────────────────────
-    // db.t3.micro: la instancia mas pequena de RDS. Cubierta por Free Tier el primer año (750 h/mes de instancia Single-AZ).
-    // Single-AZ: sin replica de alta disponibilidad. Apropiado para un TFM donde la disponibilidad 24/7 no es un requisito critico.
-    // publiclyAccessible: true - necesario por la decision sin VPC.
-    // deletionProtection: false - permite eliminar la instancia desde CDK en entorno de desarrollo. Se mantiene durante el desarrollo. 
-    // TODO: CUANDO EL PROYECT SEA PRODUCTIVO, SE DEBE CAMBIAR A TRUE PARA EVITAR BORRADOS ACCIDENTALES.
-    // TODO: CAMBIAR removalPolicy A "RETAIN" CUANDO EL PROYECT SEA PRODUCTIVO PARA EVITAR BORRADOS ACCIDENTALES
-    const dbInstance = new rds.DatabaseInstance(this, 'TfmDatabase', {
-      engine: rds.DatabaseInstanceEngine.mysql({
-        version: rds.MysqlEngineVersion.VER_8_0,
+    // ── 3. Aurora Serverless v2 Cluster ───────────────────────────────────
+    // Por qué Aurora Serverless v2 con 0 ACU:
+    //   - Pausa automática nativa tras inactividad (elimina Lambda tfm-rds-scheduler)
+    //   - Reanudación automática en ~15 segundos (vs 7-10 min de RDS start/stop)
+    //   - Escala de 0 a 2 ACUs según demanda, facturando por segundo
+    //   - Elimina los ciclos de recovery erráticos causados por el scheduler anterior
+    //   - Coste en reposo: solo almacenamiento (~$0.01/mes para este volumen de datos)
+    //   - Coste estimado anual en producción real (150 usuarios, 30 eventos/año): ~$40-50/año
+    //
+    // serverlessV2MinCapacity: 0 → habilita auto-pause (sin coste de cómputo cuando inactivo)
+    // serverlessV2MaxCapacity: 2 → máximo 4 GB RAM, suficiente para picos de 150 usuarios
+    //
+    // Nueva clave en Secrets Manager (tfm/aurora/master-credentials) 
+    const dbCluster = new rds.DatabaseCluster(this, 'TfmDatabase', {
+      engine: rds.DatabaseClusterEngine.auroraMysql({
+        version: rds.AuroraMysqlEngineVersion.VER_3_08_0,
       }),
-      instanceType: ec2.InstanceType.of(
-        ec2.InstanceClass.T3,
-        ec2.InstanceSize.MICRO
-      ),
-      // CDK genera automaticamente usuario "admin" y una contrasena aleatoria
-      // y la almacena en Secrets Manager. Nunca se escribe en texto plano.
       credentials: rds.Credentials.fromGeneratedSecret('tfm_admin', {
-        secretName: 'tfm/rds/master-credentials',
+        secretName: 'tfm/aurora/master-credentials',
       }),
-      databaseName: 'tfm_main', // BD inicial - los schemas de cada MS los crea Flyway
-      vpc: ec2.Vpc.fromLookup(this, 'DefaultVpcForRds', { isDefault: true }),
+      defaultDatabaseName: 'tfm_main',
+      vpc: ec2.Vpc.fromLookup(this, 'DefaultVpcForAurora', { isDefault: true }),
       vpcSubnets: {
-        // Subnets publicas de la VPC por defecto - necesario para publicly accessible
+        // Subnets públicas de la VPC por defecto — necesario para publiclyAccessible: true.
+        // Misma decisión de diseño que RDS: sin VPC privada para reducir costes.
         subnetType: ec2.SubnetType.PUBLIC,
       },
       securityGroups: [dbSecurityGroup],
-      parameterGroup: dbParameterGroup,
-      publiclyAccessible: true,
-      multiAz: false, // Single-AZ - ver justificacion arriba
-      allocatedStorage: 20, // GB - minimo de RDS, suficiente
-      maxAllocatedStorage: 20, // Sin autoscaling de storage - control de costes
-      storageType: rds.StorageType.GP2,
-      deletionProtection: false,
-      removalPolicy: cdk.RemovalPolicy.DESTROY, 
-      // backupRetention: 1 dias - activa backups automaticos.
-      // Unico valor permitido para free tier.
-      // En un principio los backups generados no van a llegar a al máximo gratuito de RDS (20 GB)
-      backupRetention: cdk.Duration.days(1),
+      serverlessV2MinCapacity: 0,
+      serverlessV2MaxCapacity: 2,
+      writer: rds.ClusterInstance.serverlessV2('Writer', {
+        // publiclyAccessible: true permite conexión directa desde Lambda sin VPC privada.
+        // Misma decisión de diseño que RDS: protección por SSL + credenciales en Secrets Manager.
+        publiclyAccessible: true,
+      }),
+      parameterGroup: clusterParameterGroup,
+      deletionProtection: false,           // TODO: cambiar a true en producción real
+      removalPolicy: cdk.RemovalPolicy.DESTROY, // TODO: cambiar a RETAIN en producción real
+      backup: {
+        retention: cdk.Duration.days(1),   // 1 día — suficiente para un TFM
+      },
+      storageEncrypted: false,             // Consistente con la configuración anterior de RDS
     });
 
-    // ── 4. Exponer endpoint ───────────────────────────────────────────────
-    this.dbEndpoint = dbInstance.dbInstanceEndpointAddress;
-    this.dbPort = dbInstance.dbInstanceEndpointPort;
-    this.dbInstanceIdentifier = dbInstance.instanceIdentifier;
+    // Auto-pause: Aurora pausa el cluster tras 30 minutos sin conexiones activas.
+    //
+    // CDK L2 no expone SecondsUntilAutoPause directamente cuando serverlessV2MinCapacity=0.
+    // Se configura mediante escape hatch sobre el recurso CloudFormation subyacente.
+    //
+    // Rango permitido: 300s (5 min) — 86400s (24 h).
+    // 900s (15 min): apropiado para una banda de música. Las sesiones de respuesta 
+    // a encuestas duran 5-10 min; con 15 min de margen Aurora no se pausa mientras
+    // hay actividad y pausa rápido cuando todos los usuarios han terminado.
+    const cfnCluster = dbCluster.node.defaultChild as rds.CfnDBCluster;
+    cfnCluster.addPropertyOverride(
+      'ServerlessV2ScalingConfiguration.SecondsUntilAutoPause',
+      900
+    );
+    // ── 4. Exponer propiedades ────────────────────────────────────────────
+    this.dbEndpoint = dbCluster.clusterEndpoint.hostname;
+    this.dbPort = '3306'; // Aurora MySQL siempre usa 3306 — no es un Token CDK
+    this.dbClusterIdentifier = dbCluster.clusterIdentifier;
     
     // ── 5. SSM Parameters ─────────────────────────────────────────────────
     // Almacenamos en SSM los datos de conexion de cada microservicio.
@@ -102,14 +122,14 @@ export class DatabaseStack extends cdk.Stack {
     // Endpoint compartido (los 3 MS usan la misma instancia RDS)
     new ssm.StringParameter(this, 'DbEndpointParam', {
       parameterName: '/tfm/db/endpoint',
-      stringValue: dbInstance.dbInstanceEndpointAddress,
-      description: 'Endpoint del RDS MySQL de TFM Bandas',
+      stringValue: dbCluster.clusterEndpoint.hostname,
+      description: 'Cluster endpoint Aurora MySQL de TFM Bandas',
     });
 
     new ssm.StringParameter(this, 'DbPortParam', {
       parameterName: '/tfm/db/port',
-      stringValue: dbInstance.dbInstanceEndpointPort,
-      description: 'Puerto del RDS MySQL de TFM Bandas',
+      stringValue: '3306',
+      description: 'Puerto del cluster Aurora MySQL de TFM Bandas',
     });
 
     // URLs JDBC de cada microservicio
@@ -118,48 +138,48 @@ export class DatabaseStack extends cdk.Stack {
     // requireSSL=true: falla si el servidor no acepta SSL (doble garantia)
     new ssm.StringParameter(this, 'DbUrlUsers', {
       parameterName: '/tfm/db/url/users',
-      stringValue: `jdbc:mysql://${dbInstance.dbInstanceEndpointAddress}:3306/tfm_users?useSSL=true&requireSSL=true`,
-      description: 'JDBC URL para MS Users',
+      stringValue: `jdbc:mysql://${dbCluster.clusterEndpoint.hostname}:3306/tfm_users?useSSL=true&requireSSL=true`,
+      description: 'JDBC URL Aurora para MS Users',
     });
 
     new ssm.StringParameter(this, 'DbUrlEvents', {
       parameterName: '/tfm/db/url/events',
-      stringValue: `jdbc:mysql://${dbInstance.dbInstanceEndpointAddress}:3306/tfm_events?useSSL=true&requireSSL=true`,
-      description: 'JDBC URL para MS Events',
+      stringValue: `jdbc:mysql://${dbCluster.clusterEndpoint.hostname}:3306/tfm_events?useSSL=true&requireSSL=true`,
+      description: 'JDBC URL Aurora para MS Events',
     });
 
     new ssm.StringParameter(this, 'DbUrlSurveys', {
       parameterName: '/tfm/db/url/surveys',
-      stringValue: `jdbc:mysql://${dbInstance.dbInstanceEndpointAddress}:3306/tfm_surveys?useSSL=true&requireSSL=true`,
-      description: 'JDBC URL para MS Surveys',
+      stringValue: `jdbc:mysql://${dbCluster.clusterEndpoint.hostname}:3306/tfm_surveys?useSSL=true&requireSSL=true`,
+      description: 'JDBC URL Aurora para MS Surveys',
     });
 
     // Nombre de usuario admin (no es secreto, si el valor de la contrasena)
     new ssm.StringParameter(this, 'DbUsernameParam', {
       parameterName: '/tfm/db/username',
       stringValue: 'tfm_admin',
-      description: 'Usuario administrador de RDS - contrasena en Secrets Manager',
+      description: 'Usuario administrador de Aurora — contraseña en Secrets Manager tfm/aurora/master-credentials',
     });
 
     // ── 6. Outputs ────────────────────────────────────────────────────────
     new cdk.CfnOutput(this, 'DbEndpoint', {
-      value: dbInstance.dbInstanceEndpointAddress,
-      description: 'Endpoint RDS - usar para conectar con MySQL Workbench o Flyway',
+      value: dbCluster.clusterEndpoint.hostname,
+      description: 'Cluster endpoint Aurora — usar para conectar con MySQL Workbench o mysql CLI',
     });
 
     new cdk.CfnOutput(this, 'DbPort', {
-      value: dbInstance.dbInstanceEndpointPort,
-      description: 'Puerto RDS',
+      value: '3306',
+      description: 'Puerto Aurora MySQL',
     });
 
     new cdk.CfnOutput(this, 'DbSecretArn', {
-      value: dbInstance.secret!.secretArn,
-      description: 'ARN del secreto en Secrets Manager - contiene usuario y contrasena del admin',
+      value: dbCluster.secret!.secretArn,
+      description: 'ARN del secreto en Secrets Manager — credenciales del admin de Aurora',
     });
 
-    new cdk.CfnOutput(this, 'DbSecretName', {
-      value: 'tfm/rds/master-credentials',
-      description: 'Nombre del secreto en Secrets Manager',
+    new cdk.CfnOutput(this, 'DbClusterIdentifier', {
+      value: dbCluster.clusterIdentifier,
+      description: 'Identificador del cluster Aurora — para aws CLI y consola',
     });
   }
 }
