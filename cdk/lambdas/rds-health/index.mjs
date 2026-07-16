@@ -15,8 +15,7 @@
  *
  * Cuando devolvemos STARTING, la primera petición real de la Lambda de negocio
  * (Flyway al arrancar Spring Boot) dispara la reanudación de Aurora.
- * El frontend muestra la pantalla de espera y reintenta cada 10 segundos.
- * En el tercer o cuarto reintento (~30s después), Aurora ya estará disponible.
+ * El frontend muestra la pantalla de espera y reintenta cada X segundos hasta que Aurora esté activa.
  *
  * Endpoint: GET /health/database (público, sin JWT)
  * Respuestas:
@@ -37,7 +36,6 @@ const AURORA_ENDPOINT = process.env.AURORA_ENDPOINT;
 const AURORA_PORT     = parseInt(process.env.AURORA_PORT || '3306', 10);
 
 // ARNs de las Lambdas de negocio a calentar cuando Aurora está activa.
-// Solo Identity: es la única sin BD, puede calentarse antes del login.
 const LAMBDA_ALIASES = JSON.parse(process.env.LAMBDA_ALIASES || '[]');
 
 /**

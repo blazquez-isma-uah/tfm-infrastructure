@@ -86,12 +86,17 @@ export class DatabaseStack extends cdk.Stack {
         publiclyAccessible: true,
       }),
       parameterGroup: clusterParameterGroup,
-      deletionProtection: false,           // TODO: cambiar a true en producción real
-      removalPolicy: cdk.RemovalPolicy.DESTROY, // TODO: cambiar a RETAIN en producción real
+      // Protección contra borrado accidental - Impide que se borre el cluster desde la consola o CLI
+      deletionProtection: true,           
+      // Se mantiene el cluster y los datos en caso de borrado de la stack (para evitar pérdida accidental)
+      removalPolicy: cdk.RemovalPolicy.RETAIN, 
       backup: {
-        retention: cdk.Duration.days(1),   // 1 día — suficiente para un TFM
+        // 7 dias - Recomendado y sin coste adicional en Aurora Serverless v2
+        retention: cdk.Duration.days(7),   
       },
-      storageEncrypted: false,             // Consistente con la configuración anterior de RDS
+      // Cifrado de datos en reposo con KMS gestionado por AWS
+      // Recomendado para cumplir con buenas prácticas de seguridad y GDPR y sin coste adicional en Aurora Serverless v2
+      storageEncrypted: true,            
     });
 
     // Auto-pause: Aurora pausa el cluster tras 30 minutos sin conexiones activas.
