@@ -291,6 +291,26 @@ export class TfmLambdaStack extends cdk.Stack {
       authorizer: jwtAuth,
     });
 
+    // ─── Bucket S3 para fotos de perfil ───────────────────────────────────────
+    // Privado: el acceso siempre pasa por presigned URLs generadas por MS Users, nunca por URL pública directa. 
+    // Sin versionado: cada subida sobrescribe la anterior (key = {iamId}.jpg), no se conserva histórico de fotos.
+    const profilePicturesBucket = new s3.Bucket(this, 'ProfilePicturesBucket', {
+      bucketName: `tfm-profile-pictures-${this.account}`,
+      removalPolicy: cdk.RemovalPolicy.DESTROY,
+      autoDeleteObjects: true,
+      blockPublicAccess: s3.BlockPublicAccess.BLOCK_ALL,
+      cors: [
+        {
+          allowedMethods: [s3.HttpMethods.PUT, s3.HttpMethods.GET],
+          allowedOrigins: [
+            'https://d36zednbsqfg0h.cloudfront.net',
+            'http://localhost:5173',
+          ],
+          allowedHeaders: ['*'],
+          maxAge: 3000,
+        },
+      ],
+    });
 
     // ─── MS Users ───────────────────────────────────────────────────────────────
     // Gestiona perfiles de usuario, instrumentos y roles.
@@ -308,6 +328,18 @@ export class TfmLambdaStack extends cdk.Stack {
       managedPolicies: [
         iam.ManagedPolicy.fromAwsManagedPolicyName('service-role/AWSLambdaBasicExecutionRole'),
       ],
+      // Permisos para generar presigned URLs de PUT y GET en el bucket de fotos de perfil
+      inlinePolicies: {
+        ProfilePicturesPolicy: new iam.PolicyDocument({
+          statements: [
+            new iam.PolicyStatement({
+              effect: iam.Effect.ALLOW,
+              actions: ['s3:PutObject', 's3:GetObject'],
+              resources: [`${profilePicturesBucket.bucketArn}/*`],
+            }),
+          ],
+        }),
+      },
     });
 
     // 2. Lambda Function para MS Users
@@ -327,6 +359,10 @@ export class TfmLambdaStack extends cdk.Stack {
         MAIN_CLASS: 'com.tfm.bandas.users.UsuariosApplication',
         COGNITO_JWKS_URI: props.cognitoJwksUri,
         COGNITO_ISSUER_URI: props.cognitoIssuerUri,
+        // Key del bucket de fotos de perfil
+        PROFILE_PICTURES_BUCKET: profilePicturesBucket.bucketName,
+        PROFILE_PICTURE_UPLOAD_URL_TTL_MINUTES: '5',
+        PROFILE_PICTURE_DOWNLOAD_URL_TTL_MINUTES: '10',
         // URL base del API Gateway: MS Users la usa para llamar a MS Identity via Feign.
         IDENTITY_SERVICE_URI: this.apiUrl,
         // Credenciales de BD resueltas desde SSM Parameter Store por CloudFormation en deploy.
