@@ -89,11 +89,8 @@ export class AuthStack extends cdk.Stack {
           'http://localhost:5173/login',
         ],
       },
-      // accessTokenValidity: 1 hora (equivalente al tiempo de Keycloak)
       accessTokenValidity: cdk.Duration.hours(1),
-      // refreshTokenValidity: 30 días
-      refreshTokenValidity: cdk.Duration.days(30),
-      // idTokenValidity: 1 hora
+      refreshTokenValidity: cdk.Duration.days(7),
       idTokenValidity: cdk.Duration.hours(1),
     });
 

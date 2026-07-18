@@ -5,8 +5,6 @@ import * as lambda from 'aws-cdk-lib/aws-lambda';
 import * as iam from 'aws-cdk-lib/aws-iam';
 import * as ssm from 'aws-cdk-lib/aws-ssm';
 import { Construct } from 'constructs';
-import * as events from 'aws-cdk-lib/aws-events';
-import * as targets from 'aws-cdk-lib/aws-events-targets';
 import * as s3 from 'aws-cdk-lib/aws-s3';
 
 /**
@@ -61,8 +59,8 @@ export interface LambdaStackProps extends cdk.StackProps {
   /** Path de API que MS Surveys usa para llamar a MS Events y validar existencia de evento. */
   eventsServiceExistsPath: string;
 
-  /** Identificador de la instancia RDS. Usado por las Lambdas de scheduler y health check. */
-  rdsInstanceId: string;
+  /** Endpoint del cluster Aurora. Usado por tfm-rds-health para comprobar disponibilidad via TCP. */
+  auroraEndpoint: string;
 }
 
 export class TfmLambdaStack extends cdk.Stack {
@@ -80,6 +78,41 @@ export class TfmLambdaStack extends cdk.Stack {
 
   constructor(scope: Construct, id: string, props: LambdaStackProps) {
     super(scope, id, props);
+
+    // ─── Estrategia de código para las Lambdas ────────────────────────────────────
+    // Por defecto, CDK lee el código de cada Lambda desde S3 (tfm-deployments-ACCOUNT).
+    // El pipeline de GitHub Actions es el responsable de compilar y subir el JAR a S3
+    // en cada push a main. Esto desacopla los despliegues de infraestructura (CDK) de
+    // los despliegues de código (CI/CD), que es la separación de responsabilidades correcta.
+    //
+    // Para desarrollo rápido sin necesidad de commit, se puede usar el JAR local:
+    //   cdk deploy TfmLambdaStack --context useLocalJar=true
+    //
+    // Esto es útil para probar cambios puntuales en local antes de subirlos a main.
+    // En producción y en CI siempre se omite el contexto (usa S3 por defecto).
+    const useLocalJar = this.node.tryGetContext('useLocalJar') === 'true';
+
+    // Referencia al bucket de despliegue. Se usa fromBucketName (no new Bucket)
+    // porque el bucket se define más abajo en este mismo stack: fromBucketName
+    // crea solo una referencia lógica sin crear ningún recurso CloudFormation adicional.
+    const deployBucket = s3.Bucket.fromBucketName(
+      this,
+      'DeployBucketRef',
+      `tfm-deployments-${this.account}`
+    );
+
+    // Helper: devuelve el código correcto según la estrategia activa.
+    // Centraliza la lógica para que cada Lambda no tenga que repetirla.
+    // Nota sobre el warning @aws-cdk/aws-lambda:codeFromBucketObjectVersionNotSpecified:
+    // CDK avisa de que no rastreará cambios en el objeto S3. Este comportamiento es
+    // INTENCIONADO: los cambios de código los gestiona el pipeline de GitHub Actions
+    // via aws lambda update-function-code, no CDK. CDK solo gestiona infraestructura.
+    // La separación de responsabilidades es deliberada.
+    const lambdaCode = (localPath: string, s3Key: string): lambda.Code =>
+      useLocalJar
+        ? lambda.Code.fromAsset(localPath + '/target/app.jar')
+        : lambda.Code.fromBucket(deployBucket, s3Key);
+
 
     // ─── API Gateway HTTP API ───────────────────────────────────────────────────────────────
     // HTTP API (apigatewayv2) en lugar de REST API (apigateway) por tres razones:
@@ -193,8 +226,8 @@ export class TfmLambdaStack extends cdk.Stack {
       // AwsSpringHttpProcessingUtils. La clase principal de Spring Boot se
       // indica con la variable de entorno MAIN_CLASS.
       handler: 'com.amazonaws.serverless.proxy.spring.SpringDelegatingLambdaContainerHandler::handleRequest',
-      // El código de la Lambda se empaqueta como un JAR ejecutable (con todas las dependencias incluidas) usando el plugin maven-shade.
-      code: lambda.Code.fromAsset(props.identityServicePath + '/target/app.jar'),
+      // El código de la Lambda se empaqueta en un JAR/ZIP con maven-shade y se sube a S3.
+      code: lambdaCode(props.identityServicePath, 'tfm-identity/app.jar'),
       role: identityRole,
       // 1024MB de memoria para mejorar el rendimiento de arranque de Spring Boot.
       memorySize: 1024,
@@ -258,6 +291,26 @@ export class TfmLambdaStack extends cdk.Stack {
       authorizer: jwtAuth,
     });
 
+    // ─── Bucket S3 para fotos de perfil ───────────────────────────────────────
+    // Privado: el acceso siempre pasa por presigned URLs generadas por MS Users, nunca por URL pública directa. 
+    // Sin versionado: cada subida sobrescribe la anterior (key = {iamId}.jpg), no se conserva histórico de fotos.
+    const profilePicturesBucket = new s3.Bucket(this, 'ProfilePicturesBucket', {
+      bucketName: `tfm-profile-pictures-${this.account}`,
+      removalPolicy: cdk.RemovalPolicy.DESTROY,
+      autoDeleteObjects: true,
+      blockPublicAccess: s3.BlockPublicAccess.BLOCK_ALL,
+      cors: [
+        {
+          allowedMethods: [s3.HttpMethods.PUT, s3.HttpMethods.GET],
+          allowedOrigins: [
+            'https://d36zednbsqfg0h.cloudfront.net',
+            'http://localhost:5173',
+          ],
+          allowedHeaders: ['*'],
+          maxAge: 3000,
+        },
+      ],
+    });
 
     // ─── MS Users ───────────────────────────────────────────────────────────────
     // Gestiona perfiles de usuario, instrumentos y roles.
@@ -275,6 +328,18 @@ export class TfmLambdaStack extends cdk.Stack {
       managedPolicies: [
         iam.ManagedPolicy.fromAwsManagedPolicyName('service-role/AWSLambdaBasicExecutionRole'),
       ],
+      // Permisos para generar presigned URLs de PUT y GET en el bucket de fotos de perfil
+      inlinePolicies: {
+        ProfilePicturesPolicy: new iam.PolicyDocument({
+          statements: [
+            new iam.PolicyStatement({
+              effect: iam.Effect.ALLOW,
+              actions: ['s3:PutObject', 's3:GetObject'],
+              resources: [`${profilePicturesBucket.bucketArn}/*`],
+            }),
+          ],
+        }),
+      },
     });
 
     // 2. Lambda Function para MS Users
@@ -283,7 +348,8 @@ export class TfmLambdaStack extends cdk.Stack {
       description: 'MS Users - Gestion de perfiles, instrumentos y roles.',
       runtime: lambda.Runtime.JAVA_21,
       handler: 'com.amazonaws.serverless.proxy.spring.SpringDelegatingLambdaContainerHandler::handleRequest',
-      code: lambda.Code.fromAsset(props.usersServicePath + '/target/app.jar'),
+      // El código de la Lambda se empaqueta en un JAR/ZIP con maven-shade y se sube a S3.
+      code: lambdaCode(props.usersServicePath, 'tfm-users/app.jar'),
       role: usersRole,
       memorySize: 1024,
       // 45s: con el cold start de MS Identity + el tiempo de procesamiento + overhead de red, 30s puede ser justo para las llamadas Feign.
@@ -293,18 +359,23 @@ export class TfmLambdaStack extends cdk.Stack {
         MAIN_CLASS: 'com.tfm.bandas.users.UsuariosApplication',
         COGNITO_JWKS_URI: props.cognitoJwksUri,
         COGNITO_ISSUER_URI: props.cognitoIssuerUri,
+        // Key del bucket de fotos de perfil
+        PROFILE_PICTURES_BUCKET: profilePicturesBucket.bucketName,
+        PROFILE_PICTURE_UPLOAD_URL_TTL_MINUTES: '5',
+        PROFILE_PICTURE_DOWNLOAD_URL_TTL_MINUTES: '10',
         // URL base del API Gateway: MS Users la usa para llamar a MS Identity via Feign.
         IDENTITY_SERVICE_URI: this.apiUrl,
         // Credenciales de BD resueltas desde SSM Parameter Store por CloudFormation en deploy.
         // El valor real nunca aparece en el template de CloudFormation ni en los logs de CDK.
-        DB_URL: ssm.StringParameter.valueForStringParameter(this, '/tfm/db/url/users'),
-        DB_USERNAME: ssm.StringParameter.valueForStringParameter(this, '/tfm/db/username'),
+        // valueFromLookup resuelve el valor en tiempo de deploy y detecta cambios en el valor de SSM para redeployar la Lambda si cambia
+        DB_URL: ssm.StringParameter.valueFromLookup(this, '/tfm/db/url/users'),
+        DB_USERNAME: ssm.StringParameter.valueFromLookup(this, '/tfm/db/username'),
         // DB_PASSWORD se lee de SSM como String (no SecureString) por decision documentada.
         // CloudFormation no puede resolver {{resolve:ssm-secure:...}} en variables de entorno de Lambda. 
         // Lambda cifra las variables de entorno at rest con KMS por defecto, lo que da un nivel de proteccion equivalente.
         // La alternativa de Secrets Manager (SecretValue.secretsManager) introduciria
         // una dependencia adicional sin beneficio de seguridad real en este contexto.
-        DB_PASSWORD: ssm.StringParameter.valueForStringParameter(this, '/tfm/db/password'),
+        DB_PASSWORD: ssm.StringParameter.valueFromLookup(this, '/tfm/db/password'),
       },
     });
 
@@ -391,7 +462,8 @@ export class TfmLambdaStack extends cdk.Stack {
       functionName: 'tfm-events',
       runtime: lambda.Runtime.JAVA_21,
       handler: 'com.amazonaws.serverless.proxy.spring.SpringDelegatingLambdaContainerHandler::handleRequest',
-      code: lambda.Code.fromAsset(props.eventsServicePath + '/target/app.jar'),
+      // El código de la Lambda se empaqueta en un JAR/ZIP con maven-shade y se sube a S3.
+      code: lambdaCode(props.eventsServicePath, 'tfm-events/app.jar'),
       role: eventsRole,
       memorySize: 1024,
       timeout: cdk.Duration.seconds(45),
@@ -402,14 +474,14 @@ export class TfmLambdaStack extends cdk.Stack {
         COGNITO_ISSUER_URI: props.cognitoIssuerUri,
         SURVEYS_SERVICE_URI: this.apiUrl,
         SURVEYS_SERVICE_DELETE_BY_EVENT_ID_PATH: props.surveysServiceDeleteByEventIdPath,
-        DB_URL: ssm.StringParameter.valueForStringParameter(this, '/tfm/db/url/events'),
-        DB_USERNAME: ssm.StringParameter.valueForStringParameter(this, '/tfm/db/username'),
+        DB_URL: ssm.StringParameter.valueFromLookup(this, '/tfm/db/url/events'),
+        DB_USERNAME: ssm.StringParameter.valueFromLookup(this, '/tfm/db/username'),
         // DB_PASSWORD se lee de SSM como String (no SecureString) por decision documentada.
         // CloudFormation no puede resolver {{resolve:ssm-secure:...}} en variables de entorno de Lambda. 
         // Lambda cifra las variables de entorno at rest con KMS por defecto, lo que da un nivel de proteccion equivalente.
         // La alternativa de Secrets Manager (SecretValue.secretsManager) introduciria
         // una dependencia adicional sin beneficio de seguridad real en este contexto.
-        DB_PASSWORD: ssm.StringParameter.valueForStringParameter(this, '/tfm/db/password'),
+        DB_PASSWORD: ssm.StringParameter.valueFromLookup(this, '/tfm/db/password'),
       },
     });
 
@@ -463,7 +535,8 @@ export class TfmLambdaStack extends cdk.Stack {
       functionName: 'tfm-surveys',
       runtime: lambda.Runtime.JAVA_21,
       handler: 'com.amazonaws.serverless.proxy.spring.SpringDelegatingLambdaContainerHandler::handleRequest',
-      code: lambda.Code.fromAsset(props.surveysServicePath + '/target/app.jar'),
+      // El código de la Lambda se empaqueta en un JAR/ZIP con maven-shade y se sube a S3.
+      code: lambdaCode(props.surveysServicePath, 'tfm-surveys/app.jar'),
       role: surveysRole,
       memorySize: 1024,
       timeout: cdk.Duration.seconds(45),
@@ -477,9 +550,9 @@ export class TfmLambdaStack extends cdk.Stack {
         // Feign construye la URL completa: EVENTS_SERVICE_URI + EVENTS_SERVICE_EXISTS_PATH + {eventId}
         EVENTS_SERVICE_URI: this.apiUrl,
         EVENTS_SERVICE_EXISTS_PATH: props.eventsServiceExistsPath,
-        DB_URL: ssm.StringParameter.valueForStringParameter(this, '/tfm/db/url/surveys'),
-        DB_USERNAME: ssm.StringParameter.valueForStringParameter(this, '/tfm/db/username'),
-        DB_PASSWORD: ssm.StringParameter.valueForStringParameter(this, '/tfm/db/password'),
+        DB_URL: ssm.StringParameter.valueFromLookup(this, '/tfm/db/url/surveys'),
+        DB_USERNAME: ssm.StringParameter.valueFromLookup(this, '/tfm/db/username'),
+        DB_PASSWORD: ssm.StringParameter.valueFromLookup(this, '/tfm/db/password'),
       },
     });
 
@@ -533,22 +606,12 @@ export class TfmLambdaStack extends cdk.Stack {
           statements: [
             new iam.PolicyStatement({
               effect: iam.Effect.ALLOW,
-              // DescribeDBInstances: leer el estado actual de RDS
-              // StartDBInstance: arrancar RDS cuando está parada
-              actions: ['rds:DescribeDBInstances', 'rds:StartDBInstance'],
-              resources: [
-                `arn:aws:rds:eu-west-1:${this.account}:db:${props.rdsInstanceId}`,
-              ],
-            }),
-            new iam.PolicyStatement({
-              effect: iam.Effect.ALLOW,
-              // InvokeFunction: invocar las 4 Lambdas de negocio para warm-up
+              // InvokeFunction: invocar Lambda de Identity para warm-up
+              // Aurora no necesita permisos IAM: se reanuda automáticamente
+              // al recibir la primera conexión TCP, sin StartDBInstance.
               actions: ['lambda:InvokeFunction'],
               resources: [
                 identityAlias.functionArn,
-                usersAlias.functionArn,
-                eventsAlias.functionArn,
-                surveysAlias.functionArn,
               ],
             }),
           ],
@@ -566,14 +629,19 @@ export class TfmLambdaStack extends cdk.Stack {
       memorySize: 256,
       timeout: cdk.Duration.seconds(10),
       environment: {
-        // Identificador de la instancia RDS para las llamadas a la API de RDS.
-        RDS_INSTANCE_ID: props.rdsInstanceId,
+        // Endpoint del cluster Aurora para comprobar disponibilidad via TCP antes del login.
+        // Aurora no requiere StartDBInstance — se reanuda sola al recibir la primera conexión.
+        AURORA_ENDPOINT: props.auroraEndpoint,
+        AURORA_PORT: '3306',
         // ARNs de los alias live de las Lambdas de negocio para warm-up.
         // Se pasan como JSON para evitar múltiples variables de entorno.
         // Solo se incluye el alias de Identity porque es la unica que no necesita autenticacion JWT 
         // y puede beneficiarse del warm-up antes de la primera peticion real.
         LAMBDA_ALIASES: JSON.stringify([
           identityAlias.functionArn,
+          usersAlias.functionArn,
+          eventsAlias.functionArn,
+          surveysAlias.functionArn,
         ]),
       },
     });
@@ -590,67 +658,6 @@ export class TfmLambdaStack extends cdk.Stack {
       // Sin authorizer: intencionadamente público
     });
 
-    // ─── Lambda Scheduler — apagado por inactividad ───────────────────────────────
-    // Comprueba cada hora si RDS lleva INACTIVITY_HOURS horas sin conexiones activas.
-    // Si es así, la apaga para reducir costes una vez expirado el Free Tier de RDS.
-
-    const schedulerRole = new iam.Role(this, 'RdsSchedulerLambdaRole', {
-      assumedBy: new iam.ServicePrincipal('lambda.amazonaws.com'),
-      description: 'IAM Role para Lambda de apagado automatico de RDS por inactividad',
-      managedPolicies: [
-        iam.ManagedPolicy.fromAwsManagedPolicyName('service-role/AWSLambdaBasicExecutionRole'),
-      ],
-      inlinePolicies: {
-        RdsSchedulerPolicy: new iam.PolicyDocument({
-          statements: [
-            new iam.PolicyStatement({
-              effect: iam.Effect.ALLOW,
-              actions: ['rds:DescribeDBInstances', 'rds:StopDBInstance'],
-              resources: [
-                `arn:aws:rds:eu-west-1:${this.account}:db:${props.rdsInstanceId}`,
-              ],
-            }),
-            new iam.PolicyStatement({
-              effect: iam.Effect.ALLOW,
-              // GetMetricStatistics no soporta ARN de recurso especifico en IAM
-              actions: ['cloudwatch:GetMetricStatistics'],
-              resources: ['*'],
-            }),
-          ],
-        }),
-      },
-    });
-
-    const schedulerLambda = new lambda.Function(this, 'RdsSchedulerLambda', {
-      functionName: 'tfm-rds-scheduler',
-      description: 'Apaga RDS automaticamente tras 2 horas sin actividad',
-      runtime: lambda.Runtime.NODEJS_20_X,
-      handler: 'index.handler',
-      code: lambda.Code.fromAsset('./lambdas/rds-scheduler'),
-      role: schedulerRole,
-      memorySize: 128,
-      timeout: cdk.Duration.seconds(30),
-      environment: {
-        // Identificador de la instancia RDS para las llamadas a la API de RDS.
-        RDS_INSTANCE_ID: props.rdsInstanceId,
-        // Horas de inactividad requeridas antes de apagar RDS.
-        // Con HikariCP minimum-idle=1, las conexiones caen a 0 ~15 min
-        // despues de que los usuarios dejen de usar la app.
-        // 2 horas da margen suficiente para sesiones largas intermitentes.
-        INACTIVITY_HOURS: '2',
-      },
-    });
-
-    // EventBridge Rule: dispara el scheduler cada hora
-    const inactivityRule = new events.Rule(this, 'RdsInactivityRule', {
-      ruleName: 'tfm-rds-inactivity-check',
-      description: 'Comprueba cada hora si RDS lleva 2h sin actividad para apagarla',
-      schedule: events.Schedule.rate(cdk.Duration.hours(1)),
-    });
-
-    inactivityRule.addTarget(new targets.LambdaFunction(schedulerLambda));
-
-
     // ── GitHub Actions — Rol de deploy para microservicios ────────────────────────
 
     // Referencia al proveedor OIDC de GitHub creado en FrontendStack.
@@ -663,13 +670,18 @@ export class TfmLambdaStack extends cdk.Stack {
     );
 
     // Bucket S3 para artefactos de despliegue (JARs de Lambda).
-    // Lifecycle de 30 dias: no necesitamos historico de JARs mas alla de un mes.
     // Nombre con account ID para garantizar unicidad global de S3.
+    // El JAR en S3 no es un backup ni un archivo histórico - es simplemente el código actualmente desplegado en producción
+    // Siempre se sube un nuevo JAR a S3 antes de actualizar el microservicio (PR mergeado en main) y se borra el JAR anterior.
+    // No se borran los jar actuales de los jar porque debe existir para hacer deploy de la Lambda.
     const deploymentBucket = new s3.Bucket(this, 'DeploymentBucket', {
       bucketName: `tfm-deployments-${this.account}`,
       removalPolicy: cdk.RemovalPolicy.DESTROY,
       autoDeleteObjects: true,
-      lifecycleRules: [{ expiration: cdk.Duration.days(30) }],
+      // Sin lifecycleRules: cada microservicio mantiene un único JAR con clave fija
+      // (tfm-users/app.jar, tfm-events/app.jar, etc.). El coste de ~320 MB es
+      // ~$0.007/mes, insignificante. Borrar el JAR haría fallar cdk deploy al
+      // intentar referenciar un objeto inexistente en S3.
     });
 
     // Rol separado del frontend por principio de minimo privilegio:

@@ -64,6 +64,7 @@
     "@aws-cdk/aws-kms:reduceCrossAccountRegionPolicyScope": true,
     "@aws-cdk/aws-lambda-nodejs:sdkV3ExcludeSmithyPackages": true,
     "@aws-cdk/aws-lambda-nodejs:useLatestRuntimeVersion": true,
+    "@aws-cdk/aws-lambda:codeFromBucketObjectVersionNotSpecified": true,
     "@aws-cdk/aws-lambda:createNewPoliciesWithAddToRolePolicy": false,
     "@aws-cdk/aws-lambda:recognizeLayerVersion": true,
     "@aws-cdk/aws-lambda:useCdkManagedLogGroup": true,
