@@ -47,6 +47,35 @@ export class FrontendStack extends cdk.Stack {
       protocolPolicy: cloudfront.OriginProtocolPolicy.HTTPS_ONLY,
     });
 
+
+    // ── CloudFront Function: enrutado SPA para React Router ─────────────
+    // Sustituye al enfoque de errorResponses (403/404 -> index.html), que
+    // NO se puede acotar por behavior en CloudFront -- se aplicaba a TODA
+    // la distribucion, incluido /api/*, provocando que 403/404 legitimos
+    // de la API (JWT invalido, recurso no encontrado) se sustituyeran por
+    // una pagina 200 con el HTML del frontend, cacheada ademas segun la
+    // politica del origen S3. Esta funcion, asociada solo al
+    // defaultBehavior, reescribe la URI antes de tocar S3, sin afectar
+    // nunca a /api/* ni /health/*.
+    const spaRoutingFunction = new cloudfront.Function(this, 'SpaRoutingFunction', {
+      functionName: 'tfm-spa-routing',
+      code: cloudfront.FunctionCode.fromInline(`
+        function handler(event) {
+            var request = event.request;
+            var uri = request.uri;
+            // Rutas sin extension de fichero (/dashboard, /admin/users, etc.) son
+            // rutas de React Router: servir index.html para que el cliente las
+            // gestione. Rutas con extension (.js, .css, .png...) pasan intactas
+            // hacia el origen S3 real.
+            if (!uri.includes('.')) {
+                request.uri = '/index.html';
+            }
+            return request;
+        }
+      `),
+    });
+
+
     // ── 3. CloudFront Distribution ────────────────────────────────────────
     const distribution = new cloudfront.Distribution(this, 'FrontendDistribution', {
       // Behavior por defecto: S3 para el frontend estático
@@ -54,6 +83,10 @@ export class FrontendStack extends cdk.Stack {
         origin: origins.S3BucketOrigin.withOriginAccessControl(websiteBucket),
         viewerProtocolPolicy: cloudfront.ViewerProtocolPolicy.REDIRECT_TO_HTTPS,
         cachePolicy: cloudfront.CachePolicy.CACHING_OPTIMIZED,
+        functionAssociations: [{
+          function: spaRoutingFunction,
+          eventType: cloudfront.FunctionEventType.VIEWER_REQUEST,
+        }],
       },
       // Behavior adicional: /api/* enrutado al API Gateway
       // CACHING_DISABLED es obligatorio: las respuestas de la API son dinámicas.
@@ -90,20 +123,20 @@ export class FrontendStack extends cdk.Stack {
         },
       },
       defaultRootObject: 'index.html',
-      errorResponses: [
-        {
-          httpStatus: 403,
-          responseHttpStatus: 200,
-          responsePagePath: '/index.html',
-          ttl: cdk.Duration.seconds(0),
-        },
-        {
-          httpStatus: 404,
-          responseHttpStatus: 200,
-          responsePagePath: '/index.html',
-          ttl: cdk.Duration.seconds(0),
-        },
-      ],
+      // errorResponses: [
+      //   {
+      //     httpStatus: 403,
+      //     responseHttpStatus: 200,
+      //     responsePagePath: '/index.html',
+      //     ttl: cdk.Duration.seconds(0),
+      //   },
+      //   {
+      //     httpStatus: 404,
+      //     responseHttpStatus: 200,
+      //     responsePagePath: '/index.html',
+      //     ttl: cdk.Duration.seconds(0),
+      //   },
+      // ],
     });
 
     // ── 4. OIDC Provider de GitHub ────────────────────────────────────────
