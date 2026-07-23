@@ -49,8 +49,12 @@ export function createBackendDeployRole(scope: Construct): BackendDeployRoleResu
           'token.actions.githubusercontent.com:aud': 'sts.amazonaws.com',
         },
         StringLike: {
-          // Cubre todos los repositorios tfm-* del usuario
-          'token.actions.githubusercontent.com:sub': 'repo:blazquez-isma-uah/tfm-*:*',
+          'token.actions.githubusercontent.com:sub': [
+            'repo:blazquez-isma-uah/tfm-identity:*',
+            'repo:blazquez-isma-uah/tfm-users:*',
+            'repo:blazquez-isma-uah/tfm-events:*',
+            'repo:blazquez-isma-uah/tfm-surveys:*',
+          ],
         },
       }
     ),
