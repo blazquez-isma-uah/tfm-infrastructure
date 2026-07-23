@@ -154,8 +154,8 @@ export class FrontendStack extends cdk.Stack {
     // Solo el repositorio tfm-front-web de tu usuario puede usarlo.
     // En fases posteriores ampliaremos este rol con permisos de ECR y Lambda.
     const githubActionsRole = new iam.Role(this, 'GithubActionsDeployRole', {
-      roleName: 'tfm-github-actions-deploy',
-      description: 'Role asumido por GitHub Actions para desplegar el frontend y microservicios',
+      roleName: 'tfm-github-actions-frontend-deploy',
+      description: 'Rol asumido por GitHub Actions para desplegar el frontend en S3/CloudFront',
       assumedBy: new iam.WebIdentityPrincipal(
         githubProvider.openIdConnectProviderArn,
         {
@@ -164,7 +164,7 @@ export class FrontendStack extends cdk.Stack {
           },
           StringLike: {
             'token.actions.githubusercontent.com:sub':
-              'repo:blazquez-isma-uah/tfm-*:*',
+              'repo:blazquez-isma-uah/tfm-front-web:*',
           },
         }
       ),
