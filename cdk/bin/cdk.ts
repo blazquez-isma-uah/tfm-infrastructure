@@ -40,7 +40,7 @@ const lambdaStack = new TfmLambdaStack(app, 'TfmLambdaStack', {
   identityServicePath: '../../identity',
   usersServicePath: '../../users',
   eventsServicePath: '../../events',
-  surveysServiceDeleteByEventIdPath: '/api/surveys/event/',
+  surveysServiceDeleteByEventIdPath: '/api/surveys/event/{eventId}',
   surveysServicePath: '../../surveys',
   eventsServiceExistsPath: '/api/events/{eventId}',
   // Endpoint de la base de datos Aurora MySQL, para que las Lambdas puedan conectarse a ella.
