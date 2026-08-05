@@ -38,13 +38,13 @@ export class DatabaseStack extends cdk.Stack {
     // require_secure_transport tiene alcance GLOBAL en Aurora MySQL, por lo que
     // se configura aquí y se aplica a todas las instancias del cluster.
     //
-    // NOTA: Si VER_3_08_0 no compila con tu versión de CDK, usar:
-    //   rds.AuroraMysqlEngineVersion.of('8.0.mysql_aurora.3.08.0')
+    // NOTA: Si VER_3_12_0 no compila con tu versión de CDK, usar:
+    //   rds.AuroraMysqlEngineVersion.of('8.0.mysql_aurora.3.12.0')
     const clusterParameterGroup = new rds.ParameterGroup(this, 'ClusterParameterGroup', {
       engine: rds.DatabaseClusterEngine.auroraMysql({
-        version: rds.AuroraMysqlEngineVersion.VER_3_08_0,
+        version: rds.AuroraMysqlEngineVersion.VER_3_12_0
       }),
-      description: 'TFM Bandas - Aurora MySQL 3.08 con SSL obligatorio',
+      description: 'TFM Bandas - Aurora MySQL 3.12.0 con SSL obligatorio',
       parameters: {
         require_secure_transport: 'ON',
       },
@@ -65,7 +65,7 @@ export class DatabaseStack extends cdk.Stack {
     // Nueva clave en Secrets Manager (tfm/aurora/master-credentials) 
     const dbCluster = new rds.DatabaseCluster(this, 'TfmDatabase', {
       engine: rds.DatabaseClusterEngine.auroraMysql({
-        version: rds.AuroraMysqlEngineVersion.VER_3_08_0,
+        version: rds.AuroraMysqlEngineVersion.VER_3_12_0,
       }),
       credentials: rds.Credentials.fromGeneratedSecret('tfm_admin', {
         secretName: 'tfm/aurora/master-credentials',
