@@ -41,10 +41,3 @@ services:
 # montamos ese JAR desde el host al contenedor para evitar tener que reconstruir la imagen en cada cambio.
 # Así, tras compilar con Maven en el host, basta con reiniciar el contenedor
 # El jar correcto a utilizar es el que se genera con el perfil "local" (app-local.jar), que incluye la configuración de Spring Boot para desarrollo local.
-
-
-# Proceso:
-# 1) Editar código en ../usuarios o ../eventos
-# 2) mvn -DskipTests package
-# 3) docker compose up -d --build
-# 4) Probar en http://localhost:8081 (usuarios) o http://localhost:8083 (eventos)

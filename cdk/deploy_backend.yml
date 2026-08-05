@@ -1,0 +1,92 @@
+name: Deploy - Lambda MS Users
+
+on:
+  push:
+    branches:
+      - main
+
+# OIDC requiere id-token:write para solicitar el token a GitHub.
+# contents:read para hacer checkout del codigo.
+permissions:
+  id-token: write
+  contents: read
+
+jobs:
+  deploy:
+    name: Build y despliegue en Lambda
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout codigo
+        uses: actions/checkout@v4
+
+      # Temurin es la distribucion OpenJDK recomendada para CI.
+      # cache:maven evita descargar dependencias en cada ejecucion.
+      - name: Configurar JDK 21
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '21'
+          cache: maven
+
+      # Genera target/app.jar via maven-shade-plugin.
+      # -DskipTests: no hay tests aun. Actualizar cuando se implementen.
+      - name: Build JAR
+        run: mvn -B clean package -DskipTests
+
+      # OIDC: GitHub solicita credenciales temporales asumiendo el rol backend.
+      # No hay Access Keys almacenadas en ningun sitio.
+      - name: Configurar credenciales AWS via OIDC
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ secrets.AWS_ROLE_ARN }}
+          aws-region: eu-west-1
+
+      # S3 como paso intermedio evita el limite de 50 MB de subida directa a Lambda.
+      - name: Subir JAR a S3
+        run: |
+          aws s3 cp target/app.jar \
+            s3://${{ secrets.DEPLOYMENT_BUCKET }}/tfm-users/app.jar
+
+      # Lambda lee el JAR desde S3 internamente.
+      - name: Actualizar codigo de Lambda ($LATEST)
+        run: |
+          aws lambda update-function-code \
+            --function-name tfm-users \
+            --s3-bucket ${{ secrets.DEPLOYMENT_BUCKET }} \
+            --s3-key tfm-users/app.jar
+
+      # Bloquea hasta que la actualizacion de $LATEST termina.
+      # Sin este wait, publish-version podria capturar un estado intermedio.
+      - name: Esperar fin de actualizacion de codigo
+        run: |
+          aws lambda wait function-updated-v2 \
+            --function-name tfm-users
+
+      # publish-version crea una version numerada inmutable y dispara
+      # la creacion del snapshot SnapStart en segundo plano.
+      - name: Publicar nueva version
+        id: publish
+        run: |
+          VERSION=$(aws lambda publish-version \
+            --function-name tfm-users \
+            --query 'Version' \
+            --output text)
+          echo "version=$VERSION" >> $GITHUB_OUTPUT
+          echo "Version publicada: $VERSION"
+
+      # Bloquea hasta que el snapshot SnapStart esta listo (tipicamente 1-3 min).
+      # Sin este wait, el alias apuntaria a una version aun no operativa.
+      - name: Esperar snapshot SnapStart
+        run: |
+          aws lambda wait function-active-v2 \
+            --function-name tfm-users \
+            --qualifier ${{ steps.publish.outputs.version }}
+
+      # Solo ahora, con el snapshot listo, se conmuta el trafico.
+      - name: Actualizar alias live a la nueva version
+        run: |
+          aws lambda update-alias \
+            --function-name tfm-users \
+            --name live \
+            --function-version ${{ steps.publish.outputs.version }}

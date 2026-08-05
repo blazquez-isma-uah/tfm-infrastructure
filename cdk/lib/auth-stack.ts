@@ -66,6 +66,7 @@ export class AuthStack extends cdk.Stack {
       generateSecret: false,
       authFlows: {
         userSrp: true,
+        userPassword: true,
       },
       oAuth: {
         flows: {
